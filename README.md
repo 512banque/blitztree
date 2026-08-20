@@ -2,6 +2,8 @@
 
 WizTree-class disk treemap for macOS. Scans a full disk (~2M files) in seconds, fully native UI.
 
+> i got mad there was nothing as fast and as nice as wiztree for my macbook so i made this pretty quickly in like 1 hour with only claude fable 5. its pretty good
+
 ![BlitzTree scanning /Applications](assets/screenshot.png)
 
 Cushion-shaded treemap (WinDirStat style) with directory title strips, a Finder-style outline table, live scan progress, and an optional free-space block. Rust scan engine, Swift/AppKit front end. No network, no telemetry.
