@@ -6,6 +6,15 @@ WizTree-class disk treemap for macOS. Scans a full disk (~2M files) in seconds, 
 
 ![BlitzTree scanning /Applications](assets/screenshot.png)
 
+## Download
+
+**[⬇ BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)** — open it, drag BlitzTree into Applications. Apple Silicon, macOS 26+.
+
+Two one-time steps on first launch:
+
+1. macOS blocks unnotarized apps (I haven't paid Apple's $99/yr): System Settings → Privacy & Security → scroll down → **Open Anyway**.
+2. Grant Full Disk Access when the app asks, then hit Relaunch.
+
 Cushion-shaded treemap (WinDirStat style) with directory title strips, a Finder-style outline table, live scan progress, and an optional free-space block. Rust scan engine, Swift/AppKit front end. No network, no telemetry.
 
 ## Why it's fast
