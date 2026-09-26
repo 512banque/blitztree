@@ -1,3 +1,5 @@
+<img src="assets/icon.png" width="128" alt="BlitzTree icon">
+
 # BlitzTree
 
 WizTree for macOS. A native disk treemap that scans a whole Mac (3.5M files) in about 12 seconds.
@@ -64,7 +66,7 @@ During a scan the UI reads atomic counters 30 times a second. When the scan ends
 
 ## Build
 
-Needs Xcode 26 or later and Rust.
+Needs Xcode 26 or later (for the Icon Composer icon and Liquid Glass APIs) and Rust.
 
 ```sh
 ./build.sh                  # → build/BlitzTree.app

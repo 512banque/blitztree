@@ -40,13 +40,19 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Ahmed Khaleel</string>
 </dict>
 </plist>
 EOF
 echo -n 'APPL????' > "$APP/Contents/PkgInfo"
-cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Icon Composer source → Assets.car (Liquid Glass, macOS 26+) plus a flat
+# AppIcon.icns that older systems use. Regenerate the source with
+# `python3 assets/gen_icon.py`.
+xcrun actool assets/AppIcon.icon --compile "$APP/Contents/Resources" \
+    --platform macosx --target-device mac --minimum-deployment-target $MIN_MACOS \
+    --app-icon AppIcon --output-partial-info-plist build/icon-partial.plist >/dev/null
 
 # Prefer a real identity: stable code requirement -> TCC/FDA grants survive rebuilds.
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $2; exit}')
