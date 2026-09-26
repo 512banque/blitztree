@@ -3,7 +3,8 @@ import Foundation
 import Observation
 
 /// Zero-copy view over the Rust engine's flat tree arrays.
-nonisolated final class Tree {
+/// Read-only after init, so sharing it across threads is safe.
+nonisolated final class Tree: @unchecked Sendable {
     private let handle: OpaquePointer
     let count: Int
     let parents: UnsafePointer<UInt32>
@@ -148,6 +149,8 @@ final class ScanModel {
     var selection: Int? = nil
     var hovered: Int? = nil
     var freeBytes: UInt64 = 0
+    /// Rebuildable folders worth deleting, largest first.
+    var cleanup: [CleanupItem] = []
     /// Volume-used minus what the scan could see: root-only territory.
     var unscannedBytes: UInt64 = 0
     var showFreeSpace: Bool = UserDefaults.standard.bool(forKey: "bz.showFree") {
@@ -163,6 +166,7 @@ final class ScanModel {
         if scanning { return }
         if let path { scanRoot = path }
         tree = nil
+        cleanup = []
         viewRoot = 0
         selection = nil
         hovered = nil
@@ -195,6 +199,9 @@ final class ScanModel {
             self.handle = nil // Tree owns it now
             scanning = false
             if let tree {
+                Task {
+                    cleanup = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
+                }
                 NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
             }
             if let vals = try? URL(fileURLWithPath: scanRoot).resourceValues(

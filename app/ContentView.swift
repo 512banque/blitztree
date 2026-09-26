@@ -5,6 +5,7 @@ import AppKit
 struct ContentView: View {
     @State private var model = ScanModel()
     @State private var showTable = true
+    @AppStorage("bz.showCleanup") private var showCleanup = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +32,10 @@ struct ContentView: View {
             statusBar
         }
         .frame(minWidth: 760, minHeight: 500)
+        .inspector(isPresented: $showCleanup) {
+            CleanupPanel(model: model)
+                .inspectorColumnWidth(min: 280, ideal: 340, max: 520)
+        }
         .toolbar { toolbar }
         .hidingWindowTitle()
         .onAppear {
@@ -134,6 +139,11 @@ struct ContentView: View {
                 Label("Directory List", systemImage: "sidebar.leading")
             }
             .help("Show directory list")
+
+            Toggle(isOn: $showCleanup) {
+                Label("Clean Up", systemImage: "sparkles")
+            }
+            .help("Show folders that are safe to clean up")
         }
     }
 

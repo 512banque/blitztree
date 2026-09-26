@@ -16,6 +16,7 @@ The app is not notarized. On first launch, allow it in System Settings → Priva
 
 - Cushion-shaded treemap colored by file type, with a synced Finder-style outline list
 - Zoom into folders, reveal in Finder, or move to Trash (with confirmation)
+- Clean Up panel: finds folders that are safe to delete (caches, `node_modules`, Rust `target`, Xcode DerivedData and more) so you can trash them in one go
 - Live progress while scanning, and an optional free-space block
 - Native AppKit/SwiftUI, with the Liquid Glass design on macOS 26 and later
 - No network access, no telemetry
