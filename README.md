@@ -2,7 +2,7 @@
 
 # BlitzTree
 
-WizTree for macOS. A native disk treemap that scans a whole Mac (3.5M files) in about 12 seconds.
+WizTree for macOS. A native disk treemap that scans a whole Mac (3.6M files) in about 14 seconds.
 
 > i got mad there was nothing as fast and as nice as wiztree for my macbook so i made this pretty quickly in like 1 hour with only claude fable 5. its pretty good
 
@@ -27,11 +27,11 @@ On first launch:
 
 ## Speed
 
-| Home folder, 2.8M entries (M4) | time |
+| Home folder, 3.1M entries (M4) | time |
 |---|---|
-| **BlitzTree** | **8.1 s** |
-| parallel `readdir` + `lstat` (what most scanners do) | 11.8 s |
-| `du -sk` | 56.7 s |
+| **BlitzTree** | **10.2 s** |
+| parallel `readdir` + `lstat` (what most scanners do) | 14.4 s |
+| `du -skx` | 65.3 s |
 
 Full numbers and method are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -46,6 +46,7 @@ Why it is fast:
 
 - Sizes are what the disk actually allocates (the same number as `du`), not apparent length.
 - A hard-linked file is counted once.
+- Only one volume is measured: disk images, Recovery and other volumes mounted inside it are skipped.
 - Folders that are only in iCloud (evicted to the cloud) are not opened, so a scan never starts a download.
 - Root-only system areas such as the Spotlight index and unified logs cannot be read without elevation. The status bar shows the size of that gap instead of hiding it.
 

@@ -44,6 +44,8 @@ const ATTR_CMN_FLAGS: u32 = 0x0004_0000;
 const ATTR_CMN_FILEID: u32 = 0x0200_0000;
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+const ATTR_DIR_MOUNTSTATUS: u32 = 0x0000_0004;
+const DIR_MNTSTATUS_MNTPOINT: u32 = 0x0000_0001;
 const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_TOTALSIZE: u32 = 0x0000_0002;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
@@ -89,6 +91,9 @@ struct RawEntry {
     name: Box<str>,
     is_dir: bool,
     dataless: bool,
+    /// Another volume is mounted here (a disk image, Recovery, a simulator
+    /// runtime, autofs). Not descended: a scan measures one volume.
+    mount_point: bool,
     size: u64,
     alloc: u64,
     /// `(device, file id)` when the file has more than one hard link.
@@ -127,7 +132,7 @@ fn read_dir_bulk(path: &Path, buf: &mut Vec<u8>, progress: &Progress) -> Option<
             | ATTR_CMN_FLAGS
             | ATTR_CMN_FILEID,
         volattr: 0,
-        dirattr: 0,
+        dirattr: ATTR_DIR_MOUNTSTATUS,
         fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE,
         forkattr: 0,
     };
@@ -175,10 +180,13 @@ fn u64_at(b: &[u8], off: usize) -> u64 {
 
 /// Parse one getattrlistbulk entry. Attribute order within an entry is fixed:
 /// RETURNED_ATTRS, ERROR, then common attrs by bit (NAME, DEVID, OBJTYPE,
-/// FLAGS, FILEID), then file attrs (LINKCOUNT, TOTALSIZE, ALLOCSIZE).
+/// FLAGS, FILEID), then dir attrs (MOUNTSTATUS), then file attrs (LINKCOUNT,
+/// TOTALSIZE, ALLOCSIZE). Dir attrs come back only for directories and file
+/// attrs only for files.
 fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
     let mut off = 4usize; // skip length
     let ret_common = u32_at(e, off);
+    let ret_dir = u32_at(e, off + 8);
     let ret_file = u32_at(e, off + 12);
     off += 20; // attribute_set_t: 5 x u32
 
@@ -225,6 +233,12 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         off += 8;
     }
 
+    let mut mount_point = false;
+    if ret_dir & ATTR_DIR_MOUNTSTATUS != 0 {
+        mount_point = u32_at(e, off) & DIR_MNTSTATUS_MNTPOINT != 0;
+        off += 4;
+    }
+
     let mut links = 1u32;
     if ret_file & ATTR_FILE_LINKCOUNT != 0 {
         links = u32_at(e, off);
@@ -248,6 +262,7 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         name: name.into(),
         is_dir,
         dataless: flags & SF_DATALESS != 0,
+        mount_point,
         size,
         alloc,
         hardlink: (!is_dir && links > 1).then_some((dev, file_id)),
@@ -318,7 +333,7 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
     };
 
     for (i, e) in entries.iter().enumerate() {
-        if e.is_dir && !e.dataless {
+        if e.is_dir && !e.dataless && !e.mount_point {
             let child_idx = base + i as u32;
             let child_path = dir_path.join(&*e.name);
             scope.spawn(move |s| walk(s, shared, child_path, child_idx));
@@ -387,7 +402,7 @@ pub fn scan_count(root: &Path, progress: &Progress) {
         for e in entries {
             if e.is_dir {
                 progress.dirs.fetch_add(1, Ordering::Relaxed);
-                if e.dataless {
+                if e.dataless || e.mount_point {
                     continue;
                 }
                 let p = dir.join(&*e.name);

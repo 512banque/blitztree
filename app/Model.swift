@@ -206,11 +206,7 @@ final class ScanModel {
             // says it holds. The difference is root-only space (Spotlight
             // index, unified logs, …) no unelevated app can read.
             unscannedBytes = 0
-            if scanRoot == "/System/Volumes/Data", let tree,
-               let attrs = try? FileManager.default.attributesOfFileSystem(forPath: scanRoot),
-               let total = (attrs[.systemSize] as? NSNumber)?.uint64Value,
-               let free = (attrs[.systemFreeSize] as? NSNumber)?.uint64Value {
-                let used = total > free ? total - free : 0
+            if scanRoot == "/System/Volumes/Data", let tree, let used = volumeUsedBytes(scanRoot) {
                 let seen = tree.alloc[0]
                 if used > seen {
                     unscannedBytes = used - seen
@@ -220,6 +216,22 @@ final class ScanModel {
             activity = nil
         }
     }
+}
+
+/// Space used by this APFS volume alone, the figure `df` shows. statfs and
+/// Foundation's systemSize/systemFreeSize describe the whole container,
+/// which also holds the macOS system volume, VM swap and Recovery.
+nonisolated func volumeUsedBytes(_ path: String) -> UInt64? {
+    var request = attrlist()
+    request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+    request.volattr = attrgroup_t(ATTR_VOL_INFO) | attrgroup_t(ATTR_VOL_SPACEUSED)
+    var reply = (length: UInt32(0), used: UInt64(0))
+    let status = withUnsafeMutableBytes(of: &reply) {
+        getattrlist(path, &request, $0.baseAddress, $0.count, 0)
+    }
+    guard status == 0 else { return nil }
+    // Packed buffer: u_int32_t length, then off_t at offset 4 (unaligned).
+    return withUnsafeBytes(of: &reply) { $0.loadUnaligned(fromByteOffset: 4, as: UInt64.self) }
 }
 
 nonisolated enum Fmt {

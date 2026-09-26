@@ -90,8 +90,15 @@ pub extern "C" fn bz_scan_start(path: *const c_char) -> *mut BzScan {
         let result = result.clone();
         std::thread::spawn(move || {
             unsafe { crate::set_thread_qos_user_interactive() };
+            let t0 = std::time::Instant::now();
             let s = scan(&path, &progress);
-            *result.lock().unwrap() = Some(build_flat(s));
+            let t1 = std::time::Instant::now();
+            let flat = build_flat(s);
+            let t2 = std::time::Instant::now();
+            if std::env::var_os("BZ_TIMING").is_some() {
+                eprintln!("[bz] scan {:.2}s  flatten {:.2}s", (t1 - t0).as_secs_f64(), (t2 - t1).as_secs_f64());
+            }
+            *result.lock().unwrap() = Some(flat);
             done.store(true, Ordering::Release);
         });
     }

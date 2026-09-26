@@ -4,6 +4,7 @@
 //!   modes: bulk        - parallel getattrlistbulk (our engine)
 //!          naive       - serial read_dir + per-file lstat (Disk Inventory X style)
 //!          naive-par   - parallel read_dir + per-file lstat
+//!   BZ_TOP=1 also prints each top-level entry's allocated bytes (for diffing).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +29,12 @@ fn main() {
             let progress = Progress::default();
             let result = scan(&path, &progress);
             let root = &result.nodes[0];
+            if std::env::var_os("BZ_TOP").is_some() {
+                for &c in &root.children {
+                    let n = &result.nodes[c as usize];
+                    eprintln!("TOP\t{}\t{}", n.name, n.alloc);
+                }
+            }
             (
                 root.n_files as u64,
                 progress.dirs.load(Ordering::Relaxed),
