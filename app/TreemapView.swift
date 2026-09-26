@@ -63,7 +63,7 @@ final class TreemapNSView: NSView {
     // — no voids, and nesting reads through the compounded cushions exactly
     // like WizTree/WinDirStat.
 
-    private struct Surface {
+    nonisolated private struct Surface {
         var ax2 = 0.0, ax1 = 0.0, ay2 = 0.0, ay1 = 0.0
 
         mutating func addRidge(_ r: CGRect, height: Double) {
@@ -81,7 +81,7 @@ final class TreemapNSView: NSView {
         }
     }
 
-    private enum Cushion {
+    nonisolated private enum Cushion {
         static let baseHeight = 0.55   // ridge height at the top level
         static let falloff = 0.72      // height multiplier per depth
         static let ambient = 0.38
@@ -102,6 +102,8 @@ final class TreemapNSView: NSView {
         let showFree = model?.showFreeSpace ?? false
         let freeBytes = model?.freeBytes ?? 0
         let rootIndex = model?.viewRoot ?? 0
+        // Filled inside the pixel closure (nonisolated), stored after it.
+        var outRects = rects, outLeaves = leaves, outLabels = labels
 
         pixels.withUnsafeMutableBufferPointer { buf in
             func shade(_ r: CGRect, _ rgb: TypeColor.RGB, _ s: Surface) {
@@ -165,7 +167,7 @@ final class TreemapNSView: NSView {
                     width: rect.width / scale, height: rect.height / scale
                 )
                 if tree.isDir(node) {
-                    rects.append(TMRect(rect: ptRect, node: node, isDir: true))
+                    outRects.append(TMRect(rect: ptRect, node: node, isDir: true))
 
                     // WizTree-style framed box: big directories get a title
                     // strip on their top border and children render inside
@@ -191,7 +193,7 @@ final class TreemapNSView: NSView {
                         shade(rect, TypeColor.strip, Surface())
                         let strip = CGRect(x: rect.minX, y: rect.minY,
                                            width: rect.width, height: headerH)
-                        labels.append((
+                        outLabels.append((
                             strip: CGRect(x: strip.minX / scale, y: strip.minY / scale,
                                           width: strip.width / scale, height: strip.height / scale),
                             region: ptRect, node: layoutNode, depth: depth, name: stripName
@@ -224,7 +226,7 @@ final class TreemapNSView: NSView {
                                 let pr = CGRect(x: r.minX / scale, y: r.minY / scale,
                                                 width: r.width / scale, height: r.height / scale)
                                 if pr.width >= 90, pr.height >= 30 {
-                                    labels.append((strip: pr, region: pr, node: -1, depth: 1, name: "Free space"))
+                                    outLabels.append((strip: pr, region: pr, node: -1, depth: 1, name: "Free space"))
                                 }
                             } else {
                                 draw(kid, r, depth == 0 ? h : h * Cushion.falloff, s, depth + 1)
@@ -246,7 +248,7 @@ final class TreemapNSView: NSView {
                         }
                     }
                 } else {
-                    leaves.append(TMRect(rect: ptRect, node: node, isDir: false))
+                    outLeaves.append(TMRect(rect: ptRect, node: node, isDir: false))
                     shade(rect, TypeColor.forName(tree.name(node)), s)
                 }
             }
@@ -254,6 +256,9 @@ final class TreemapNSView: NSView {
             let full = CGRect(x: 0, y: 0, width: pw, height: ph)
             draw(rootIndex, full, Cushion.baseHeight, Surface(), 0)
         }
+        rects = outRects
+        leaves = outLeaves
+        labels = outLabels
 
         let data = pixels.withUnsafeBufferPointer { Data(buffer: $0) }
         bitmap = CGImage(

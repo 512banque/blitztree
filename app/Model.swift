@@ -3,7 +3,7 @@ import Foundation
 import Observation
 
 /// Zero-copy view over the Rust engine's flat tree arrays.
-final class Tree {
+nonisolated final class Tree {
     private let handle: OpaquePointer
     let count: Int
     let parents: UnsafePointer<UInt32>
@@ -222,16 +222,7 @@ final class ScanModel {
     }
 }
 
-enum Fmt {
-    static let bytes: ByteCountFormatter = {
-        let f = ByteCountFormatter()
-        f.countStyle = .file
-        return f
-    }()
-    static func size(_ b: UInt64) -> String { bytes.string(fromByteCount: Int64(b)) }
-    static func num(_ n: UInt64) -> String {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        return f.string(from: NSNumber(value: n)) ?? "\(n)"
-    }
+nonisolated enum Fmt {
+    static func size(_ b: UInt64) -> String { Int64(b).formatted(.byteCount(style: .file)) }
+    static func num(_ n: UInt64) -> String { n.formatted() }
 }

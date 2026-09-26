@@ -10,6 +10,7 @@ pub mod searchfs;
 use std::ffi::{c_int, c_void, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 // ---- FFI: getattrlistbulk ----
@@ -37,13 +38,20 @@ extern "C" {
 
 const ATTR_BIT_MAP_COUNT: u16 = 5;
 const ATTR_CMN_NAME: u32 = 0x0000_0001;
+const ATTR_CMN_DEVID: u32 = 0x0000_0002;
 const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
+const ATTR_CMN_FLAGS: u32 = 0x0004_0000;
+const ATTR_CMN_FILEID: u32 = 0x0200_0000;
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_TOTALSIZE: u32 = 0x0000_0002;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
 
 const VDIR: u32 = 2;
+/// Contents live in the cloud (iCloud Drive, File Provider). Opening such a
+/// directory asks the provider to materialize it, i.e. download.
+const SF_DATALESS: u32 = 0x4000_0000;
 
 const BUF_SIZE: usize = 256 * 1024;
 
@@ -80,8 +88,11 @@ pub struct Progress {
 struct RawEntry {
     name: Box<str>,
     is_dir: bool,
+    dataless: bool,
     size: u64,
     alloc: u64,
+    /// `(device, file id)` when the file has more than one hard link.
+    hardlink: Option<(u32, u64)>,
 }
 
 /// Read all entries of one directory in bulk. Returns None if the dir can't be opened.
@@ -108,10 +119,16 @@ fn read_dir_bulk(path: &Path, buf: &mut Vec<u8>, progress: &Progress) -> Option<
     let mut attrlist = AttrList {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE,
+        commonattr: ATTR_CMN_RETURNED_ATTRS
+            | ATTR_CMN_ERROR
+            | ATTR_CMN_NAME
+            | ATTR_CMN_DEVID
+            | ATTR_CMN_OBJTYPE
+            | ATTR_CMN_FLAGS
+            | ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: 0,
-        fileattr: ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE,
+        fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE,
         forkattr: 0,
     };
 
@@ -152,8 +169,13 @@ fn i64_at(b: &[u8], off: usize) -> i64 {
     i64::from_le_bytes(b[off..off + 8].try_into().unwrap())
 }
 
+fn u64_at(b: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(b[off..off + 8].try_into().unwrap())
+}
+
 /// Parse one getattrlistbulk entry. Attribute order within an entry is fixed:
-/// RETURNED_ATTRS, ERROR, NAME, OBJTYPE, then file attrs (TOTALSIZE, ALLOCSIZE).
+/// RETURNED_ATTRS, ERROR, then common attrs by bit (NAME, DEVID, OBJTYPE,
+/// FLAGS, FILEID), then file attrs (LINKCOUNT, TOTALSIZE, ALLOCSIZE).
 fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
     let mut off = 4usize; // skip length
     let ret_common = u32_at(e, off);
@@ -179,9 +201,33 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         off += 8;
     }
 
+    let mut dev = 0u32;
+    if ret_common & ATTR_CMN_DEVID != 0 {
+        dev = u32_at(e, off);
+        off += 4;
+    }
+
     let mut is_dir = false;
     if ret_common & ATTR_CMN_OBJTYPE != 0 {
         is_dir = u32_at(e, off) == VDIR;
+        off += 4;
+    }
+
+    let mut flags = 0u32;
+    if ret_common & ATTR_CMN_FLAGS != 0 {
+        flags = u32_at(e, off);
+        off += 4;
+    }
+
+    let mut file_id = 0u64;
+    if ret_common & ATTR_CMN_FILEID != 0 {
+        file_id = u64_at(e, off);
+        off += 8;
+    }
+
+    let mut links = 1u32;
+    if ret_file & ATTR_FILE_LINKCOUNT != 0 {
+        links = u32_at(e, off);
         off += 4;
     }
 
@@ -201,8 +247,10 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
     out.push(RawEntry {
         name: name.into(),
         is_dir,
+        dataless: flags & SF_DATALESS != 0,
         size,
         alloc,
+        hardlink: (!is_dir && links > 1).then_some((dev, file_id)),
     });
 }
 
@@ -210,15 +258,30 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
 
 struct Shared<'a> {
     arena: Mutex<Vec<Node>>,
+    /// Hard-linked files already counted; later links contribute zero bytes,
+    /// matching `du` and what deleting them actually frees.
+    hardlinks: Mutex<HashSet<(u32, u64)>>,
     progress: &'a Progress,
 }
 
 fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf, dir_idx: u32) {
     let mut buf = vec![0u8; BUF_SIZE];
-    let Some(entries) = read_dir_bulk(&dir_path, &mut buf, shared.progress) else {
+    let Some(mut entries) = read_dir_bulk(&dir_path, &mut buf, shared.progress) else {
         return;
     };
     drop(buf);
+
+    if entries.iter().any(|e| e.hardlink.is_some()) {
+        let mut seen = shared.hardlinks.lock().unwrap();
+        for e in &mut entries {
+            if let Some(key) = e.hardlink {
+                if !seen.insert(key) {
+                    e.size = 0;
+                    e.alloc = 0;
+                }
+            }
+        }
+    }
 
     let mut n_files = 0u64;
     let mut n_dirs = 0u64;
@@ -255,7 +318,7 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
     };
 
     for (i, e) in entries.iter().enumerate() {
-        if e.is_dir {
+        if e.is_dir && !e.dataless {
             let child_idx = base + i as u32;
             let child_path = dir_path.join(&*e.name);
             scope.spawn(move |s| walk(s, shared, child_path, child_idx));
@@ -297,7 +360,11 @@ pub fn scan(root: &Path, progress: &Progress) -> Scan {
         n_files: 0,
         children: Vec::new(),
     }]);
-    let shared = Shared { arena, progress };
+    let shared = Shared {
+        arena,
+        hardlinks: Mutex::new(HashSet::new()),
+        progress,
+    };
 
     fast_pool().scope(|s| walk(s, &shared, root.to_path_buf(), 0));
 
@@ -320,6 +387,9 @@ pub fn scan_count(root: &Path, progress: &Progress) {
         for e in entries {
             if e.is_dir {
                 progress.dirs.fetch_add(1, Ordering::Relaxed);
+                if e.dataless {
+                    continue;
+                }
                 let p = dir.join(&*e.name);
                 scope.spawn(move |s| go(s, progress, p));
             } else {
@@ -344,5 +414,26 @@ fn aggregate(nodes: &mut [Node]) {
         p.size += size;
         p.alloc += alloc;
         p.n_files += nf;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hardlinks_count_once() {
+        let root = std::env::temp_dir().join(format!("bz-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("file"), vec![7u8; 1 << 20]).unwrap();
+        std::fs::hard_link(root.join("file"), root.join("sub/link")).unwrap();
+
+        let result = scan(&root, &Progress::default());
+        let _ = std::fs::remove_dir_all(&root);
+
+        let tree = &result.nodes[0];
+        assert_eq!(tree.n_files, 2, "both names are listed");
+        assert_eq!(tree.size, 1 << 20, "but the bytes count once");
     }
 }

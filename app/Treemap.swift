@@ -1,14 +1,14 @@
 import AppKit
 
 /// One laid-out rectangle in the treemap.
-struct TMRect {
+nonisolated struct TMRect {
     var rect: CGRect
     var node: Int
     var isDir: Bool
 }
 
 /// Squarified treemap layout (Bruls, Huizing, van Wijk) over the flat tree.
-enum Squarify {
+nonisolated enum Squarify {
     /// Lay out the direct children of `dir` into `rect` (one level, no
     /// recursion). Children below ~half a pixel are dropped — the caller has
     /// already painted the parent underneath, so nothing shows as a void.
@@ -97,7 +97,7 @@ enum Squarify {
 
 /// Per-extension colors as linear RGB triples for the cushion shader.
 /// Vivid, WizTree-class saturation — the cushion shading supplies the depth.
-enum TypeColor {
+nonisolated enum TypeColor {
     typealias RGB = (r: Double, g: Double, b: Double)
 
     private static func hsb(_ h: CGFloat, _ s: CGFloat, _ v: CGFloat) -> RGB {

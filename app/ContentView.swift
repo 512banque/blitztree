@@ -8,8 +8,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             ZStack {
                 Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1))
                 if model.tree != nil {
@@ -33,6 +31,8 @@ struct ContentView: View {
             statusBar
         }
         .frame(minWidth: 760, minHeight: 500)
+        .toolbar { toolbar }
+        .toolbar(removing: .title)
         .onAppear {
             // Never start a whole-disk scan without FDA: every protected
             // app container would fire a permission prompt.
@@ -72,62 +72,58 @@ struct ContentView: View {
         }
     }
 
-    // MARK: header
+    // MARK: toolbar
 
-    private var header: some View {
-        HStack(spacing: 10) {
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
             if let tree = model.tree {
                 breadcrumbs(tree: tree)
             } else {
-                Text(model.scanRoot)
-                    .font(.system(.body, design: .rounded).weight(.medium))
+                Text(displayRootName())
+                    .font(.system(.body, design: .rounded).weight(.semibold))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .padding(.horizontal, 8)
             }
-            Spacer()
-            if model.scanning {
-                liveStats
-            }
+        }
+        .sharedBackgroundVisibility(.hidden)
+
+        ToolbarSpacer(.flexible)
+
+        ToolbarItemGroup(placement: .automatic) {
             Menu {
-                Button("Home") { model.startScan(path: FileManager.default.homeDirectoryForCurrentUser.path) }
                 Button("Macintosh HD") { model.startScan(path: "/System/Volumes/Data") }
+                Button("Home") { model.startScan(path: FileManager.default.homeDirectoryForCurrentUser.path) }
                 Divider()
                 Button("Choose Folder…") { chooseFolder() }
             } label: {
-                Image(systemName: "folder")
+                Label("Scan", systemImage: "folder")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
             .disabled(model.scanning)
-
-            Button {
-                model.showFreeSpace.toggle()
-            } label: {
-                Image(systemName: model.showFreeSpace ? "square.dashed.inset.filled" : "square.dashed")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(model.showFreeSpace ? Color.accentColor : Color.secondary)
-            .help("Show free space in the treemap")
-
-            Button {
-                showTable.toggle()
-            } label: {
-                Image(systemName: "sidebar.leading")
-            }
-            .buttonStyle(.borderless)
-            .help("Show directory tree")
+            .help("Choose what to scan")
 
             Button {
                 model.startScan()
             } label: {
-                Image(systemName: "arrow.clockwise")
+                Label("Rescan", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
             .disabled(model.scanning)
             .help("Rescan")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+
+        ToolbarSpacer(.fixed, placement: .automatic)
+
+        ToolbarItemGroup(placement: .automatic) {
+            Toggle(isOn: $model.showFreeSpace) {
+                Label("Free Space", systemImage: "square.dashed")
+            }
+            .help("Show free space in the treemap")
+
+            Toggle(isOn: $showTable) {
+                Label("Directory List", systemImage: "sidebar.leading")
+            }
+            .help("Show directory list")
+        }
     }
 
     private func breadcrumbs(tree: Tree) -> some View {
@@ -156,17 +152,6 @@ struct ContentView: View {
         let p = model.scanRoot
         if p == "/System/Volumes/Data" { return "Macintosh HD" }
         return (p as NSString).lastPathComponent.isEmpty ? p : (p as NSString).lastPathComponent
-    }
-
-    private var liveStats: some View {
-        HStack(spacing: 12) {
-            Text(Fmt.size(model.bytes))
-            Text("\(Fmt.num(model.files)) files")
-            Text(String(format: "%.1fs", model.elapsed))
-        }
-        .font(.system(.callout, design: .monospaced))
-        .foregroundStyle(.secondary)
-        .contentTransition(.numericText())
     }
 
     // MARK: overlays

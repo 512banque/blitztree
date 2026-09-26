@@ -2,7 +2,9 @@
 # Build BlitzTree.app: Rust engine + Swift UI, assembled into a bundle.
 set -euo pipefail
 cd "$(dirname "$0")"
-source "$HOME/.cargo/env"
+[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+MIN_MACOS=26.0
 
 echo "==> Rust engine"
 cargo build --release
@@ -14,13 +16,13 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 echo "==> Swift UI"
 swiftc app/*.swift \
     -import-objc-header app/bz.h \
-    -O -parse-as-library \
-    -target arm64-apple-macos15.0 \
+    -O -parse-as-library -swift-version 6 -default-isolation MainActor \
+    -target arm64-apple-macos$MIN_MACOS \
     -L target/release -lblitztree \
     -framework AppKit -framework SwiftUI \
     -o "$APP/Contents/MacOS/BlitzTree"
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -28,11 +30,12 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleName</key><string>BlitzTree</string>
     <key>CFBundleDisplayName</key><string>BlitzTree</string>
     <key>CFBundleIdentifier</key><string>dev.ahmed.blitztree</string>
-    <key>CFBundleVersion</key><string>0.1.0</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleExecutable</key><string>BlitzTree</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Ahmed Khaleel</string>
