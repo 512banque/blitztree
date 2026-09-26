@@ -352,12 +352,18 @@ pub unsafe fn set_thread_qos_user_interactive() {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 }
 
-/// Rayon pool with USER_INTERACTIVE QoS so scan workers run on P-cores even
-/// inside a GUI app process (default app-thread QoS lands on E-cores).
+const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+
+/// Rayon pool whose workers run at USER_INITIATED QoS. That still puts them
+/// on the performance cores inside a GUI app (at the app's default QoS they
+/// land on efficiency cores and scan twice as slowly), and it scans as fast
+/// as USER_INTERACTIVE did, but it no longer outranks the UI and the system
+/// compositor: at USER_INTERACTIVE a worker on every core made the window
+/// (and screen recordings) skip frames for a quarter second mid-scan.
 fn fast_pool() -> rayon::ThreadPool {
     rayon::ThreadPoolBuilder::new()
         .start_handler(|_| unsafe {
-            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
         })
         .build()
         .expect("thread pool")

@@ -57,5 +57,12 @@ engine scan plus about 0.15 s to hand the tree to the UI.
   7.1 s): it is one sequential kernel iteration over the catalog and cannot be
   split across cores. The code is kept in `src/searchfs.rs` for reference.
 - Thread count sweet spot is about the core count. 32+ threads regress ~40%.
-- Scan threads run at `QOS_CLASS_USER_INTERACTIVE`. At a GUI app's default
+- Scan threads run at `QOS_CLASS_USER_INITIATED`. At a GUI app's default
   QoS they land on efficiency cores and the scan takes twice as long.
+  `QOS_CLASS_USER_INTERACTIVE` scanned no faster (home folder in the app:
+  8.8–9.6 s vs 9.3–9.4 s) but outranked the UI and the compositor, so the
+  window skipped frames for ~0.2–0.4 s mid-scan. Leaving cores free instead
+  cost speed: 4 workers took 14 s on the home folder, 6 took 11 s.
+- Treemap render (1600×1600 px, /Applications): 100–190 ms on one thread
+  before, now ~12 ms layout + ~16 ms paint across 30 row bands, pixel-for-pixel
+  the same image.

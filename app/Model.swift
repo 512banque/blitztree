@@ -145,6 +145,8 @@ final class ScanModel {
         // Whole disk by default: the user-data volume of the boot volume group.
         return "/System/Volumes/Data"
     }()
+    /// A tree has been shown at least once, so the views exist (see ContentView).
+    var hasShownTree = false
     var viewRoot: Int = 0
     var selection: Int? = nil
     var hovered: Int? = nil
@@ -171,6 +173,7 @@ final class ScanModel {
         selection = nil
         hovered = nil
         files = 0; dirs = 0; bytes = 0; elapsed = 0
+        lastPollAt = nil; maxPollGap = 0
         scanning = true
         startedAt = Date()
         // Keep the process out of App Nap / timer coalescing while scanning.
@@ -180,13 +183,24 @@ final class ScanModel {
         )
         handle = bz_scan_start(scanRoot)
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // 60 Hz: the elapsed time ticks every frame, so the screen keeps
+        // moving while the engine assembles the tree after the last file is
+        // counted (the counters sit still for that part).
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        // Common modes: keep polling while a control is being clicked.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
+
+    private var lastPollAt: Date?
+    private var maxPollGap: Double = 0
 
     private func poll() {
         guard let handle else { return }
+        if let last = lastPollAt { maxPollGap = max(maxPollGap, -last.timeIntervalSinceNow) }
+        lastPollAt = Date()
         var f: UInt64 = 0, d: UInt64 = 0, b: UInt64 = 0
         var done: Int32 = 0
         bz_progress(handle, &f, &d, &b, &done)
@@ -195,8 +209,17 @@ final class ScanModel {
         if done != 0 {
             timer?.invalidate()
             timer = nil
+            let doneAt = Date()
             tree = Tree(handle: handle)
             self.handle = nil // Tree owns it now
+            if tree != nil { hasShownTree = true }
+            if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
+                // When the main thread next gets a turn: the hand-off cost.
+                DispatchQueue.main.async {
+                    NSLog("BZ hand-off: main thread free %.1f ms after done", -doneAt.timeIntervalSinceNow * 1000)
+                }
+                NSLog("BZ done at %.3f, longest gap between polls %.1f ms", doneAt.timeIntervalSinceReferenceDate, maxPollGap * 1000)
+            }
             scanning = false
             if let tree {
                 Task {

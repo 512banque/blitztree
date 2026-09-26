@@ -30,7 +30,8 @@ The app is not notarized. On first launch, allow it in System Settings → Priva
 | `du -skx` | 65.3 s |
 
 - `getattrlistbulk(2)` reads a whole directory's metadata in one syscall instead of one `stat` per file.
-- A Rust worker pool keeps many directories in flight, and scan threads run at user-interactive QoS so they stay on performance cores.
+- A Rust worker pool keeps many directories in flight, and scan threads run at user-initiated QoS: they stay on performance cores without starving the UI.
+- The treemap is laid out once and painted on every core in parallel, so zooming redraws in a couple of frames.
 
 Method, full results and a comparison with other tools: [BENCHMARKS.md](BENCHMARKS.md).
 

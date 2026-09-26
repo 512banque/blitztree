@@ -5,14 +5,16 @@ import SwiftUI
 /// layout change; hover/selection drawn as a light overlay per frame.
 final class TreemapNSView: NSView {
     var model: ScanModel? {
-        didSet { relayout() }
+        // SwiftUI hands the same model back on every update; only a new one
+        // needs a render (the rest goes through relayoutIfNeeded).
+        didSet { if model !== oldValue { relayout() } }
     }
 
     private var rects: [TMRect] = []
     private var leaves: [TMRect] = [] // files only, for hit-testing
     /// `strip` is the title bar (text + hit target); `region` is the whole
     /// directory rect (hover boundary). Both in view points.
-    private var labels: [(strip: CGRect, region: CGRect, node: Int, depth: Int, name: String)] = []
+    private var labels: [TMLabel] = []
     private var labelHits: [(rect: CGRect, node: Int)] = []
     private var bitmap: CGImage?
     private var lastSize: CGSize = .zero
@@ -94,6 +96,13 @@ final class TreemapNSView: NSView {
         }
     }
 
+    /// Where one render's hit-testing geometry lands.
+    nonisolated private final class RenderOutput: @unchecked Sendable {
+        var rects: [TMRect] = []
+        var leaves: [TMRect] = []
+        var labels: [TMLabel] = []
+    }
+
     private func renderBitmap(tree: Tree) {
         let scale = window?.backingScaleFactor ?? 2
         let pw = max(1, Int((bounds.width * scale).rounded()))
@@ -102,163 +111,42 @@ final class TreemapNSView: NSView {
         let showFree = model?.showFreeSpace ?? false
         let freeBytes = model?.freeBytes ?? 0
         let rootIndex = model?.viewRoot ?? 0
-        // Filled inside the pixel closure (nonisolated), stored after it.
-        var outRects = rects, outLeaves = leaves, outLabels = labels
+        let out = RenderOutput()
 
-        pixels.withUnsafeMutableBufferPointer { buf in
-            func shade(_ r: CGRect, _ rgb: TypeColor.RGB, _ s: Surface) {
-                let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
-                let y0 = max(0, Int(r.minY.rounded())), y1 = min(ph, Int(r.maxY.rounded()))
-                guard x1 > x0, y1 > y0 else { return }
-                for py in y0..<y1 {
-                    let fy = Double(py) + 0.5
-                    let ny = -(2 * s.ay2 * fy + s.ay1)
-                    let row = buf.baseAddress! + py * pw
-                    for px in x0..<x1 {
-                        let fx = Double(px) + 0.5
-                        let nx = -(2 * s.ax2 * fx + s.ax1)
-                        let cos = (nx * Cushion.lx + ny * Cushion.ly + Cushion.lz)
-                            / (nx * nx + ny * ny + 1).squareRoot()
-                        let lum = Cushion.ambient + max(0, cos) * (1 - Cushion.ambient)
-                        let r8 = UInt32(min(255, rgb.r * lum * 255))
-                        let g8 = UInt32(min(255, rgb.g * lum * 255))
-                        let b8 = UInt32(min(255, rgb.b * lum * 255))
-                        (row + px).pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
-                    }
+        // The cushion shader repaints every pixel once per nesting level, so
+        // a full map is tens of millions of shaded pixels. Split the bitmap
+        // into horizontal bands and paint them on every core at once: each
+        // band walks the whole tree in the same order but only writes its
+        // own rows, so the result is pixel-identical to one pass.
+        // The cushion shader repaints every pixel once per nesting level:
+        // tens of millions of shaded pixels for a full map. Lay it out once,
+        // then paint horizontal bands on every core; each band runs the same
+        // steps in the same order over its own rows only, so the result is
+        // pixel-identical to a single pass.
+        let started = Date()
+        let ops = Self.layoutOps(
+            tree: tree, pw: pw, ph: ph, scale: scale, root: rootIndex,
+            showFree: showFree, freeBytes: freeBytes, out: out
+        )
+        let laidOut = Date()
+        let bands = max(1, min(ProcessInfo.processInfo.activeProcessorCount * 3, ph / 32))
+        ops.withUnsafeBufferPointer { ops in
+            pixels.withUnsafeMutableBufferPointer { buf in
+                nonisolated(unsafe) let base = buf.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: bands) { band in
+                    Self.paint(ops, base: base, pw: pw, ph: ph,
+                               rows: (ph * band / bands)..<(ph * (band + 1) / bands))
                 }
             }
-
-            /// Darken a frame band around `r` — separation "grout" between
-            /// directories. Multiplies what's underneath so hues survive.
-            func frame(_ r: CGRect, thickness: Int, factor: Double) {
-                let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
-                let y0 = max(0, Int(r.minY.rounded())), y1 = min(ph, Int(r.maxY.rounded()))
-                guard x1 - x0 > thickness * 2 + 2, y1 - y0 > thickness * 2 + 2 else { return }
-                func darken(_ px: Int, _ py: Int) {
-                    let p = buf.baseAddress! + py * pw + px
-                    let v = p.pointee
-                    let r8 = UInt32(Double(v & 0xFF) * factor)
-                    let g8 = UInt32(Double((v >> 8) & 0xFF) * factor)
-                    let b8 = UInt32(Double((v >> 16) & 0xFF) * factor)
-                    p.pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
-                }
-                for t in 0..<thickness {
-                    for px in x0..<x1 {
-                        darken(px, y0 + t)
-                        darken(px, y1 - 1 - t)
-                    }
-                    for py in (y0 + thickness)..<(y1 - thickness) {
-                        darken(x0 + t, py)
-                        darken(x1 - 1 - t, py)
-                    }
-                }
-            }
-
-            func draw(_ node: Int, _ rect: CGRect, _ h: Double, _ surface: Surface, _ depth: Int) {
-                guard rect.width >= 0.5, rect.height >= 0.5 else { return }
-                var s = surface
-                // The view root adds no ridge: a window-wide parabola would
-                // just vignette the whole map.
-                if depth > 0 {
-                    s.addRidge(rect, height: Cushion.height(rect, h))
-                }
-                let ptRect = CGRect(
-                    x: rect.minX / scale, y: rect.minY / scale,
-                    width: rect.width / scale, height: rect.height / scale
-                )
-                if tree.isDir(node) {
-                    outRects.append(TMRect(rect: ptRect, node: node, isDir: true))
-
-                    // WizTree-style framed box: big directories get a title
-                    // strip on their top border and children render inside
-                    // the frame — at every depth, no zooming required.
-                    let headerH = (15 * scale).rounded()
-                    let headed = depth >= 1
-                        && rect.width >= 88 * scale
-                        && rect.height >= max(58 * scale, headerH * 2.8)
-                    var content = rect
-                    var layoutNode = node
-                    if headed {
-                        // Collapse pass-through chains (a dir whose one child
-                        // holds ~everything) into a single "A ▸ B" strip.
-                        var stripName = tree.name(node)
-                        while let first = tree.children(layoutNode).first {
-                            let fi = Int(first)
-                            guard tree.isDir(fi),
-                                  Double(tree.alloc[fi]) >= 0.99 * Double(max(tree.alloc[layoutNode], 1))
-                            else { break }
-                            stripName += "  ▸  " + tree.name(fi)
-                            layoutNode = fi
-                        }
-                        shade(rect, TypeColor.strip, Surface())
-                        let strip = CGRect(x: rect.minX, y: rect.minY,
-                                           width: rect.width, height: headerH)
-                        outLabels.append((
-                            strip: CGRect(x: strip.minX / scale, y: strip.minY / scale,
-                                          width: strip.width / scale, height: strip.height / scale),
-                            region: ptRect, node: layoutNode, depth: depth, name: stripName
-                        ))
-                        content = CGRect(x: rect.minX + 2, y: rect.minY + headerH,
-                                         width: rect.width - 4, height: rect.height - headerH - 2)
-                    }
-
-                    // Parent cushion first: covers sub-pixel children and
-                    // pixel-snap slivers, so the map has no holes.
-                    shade(content, TypeColor.dir, s)
-                    if content.width >= 3, content.height >= 3 {
-                        let level: [(node: Int, rect: CGRect)]
-                        if depth == 0, showFree, freeBytes > 0 {
-                            // Free disk space competes for area like a file.
-                            var items: [(node: Int, size: Double)] = tree.children(layoutNode).compactMap {
-                                let sz = Double(tree.alloc[Int($0)])
-                                return sz > 0 ? (Int($0), sz) : nil
-                            }
-                            items.append((-1, Double(freeBytes)))
-                            items.sort { $0.size > $1.size }
-                            level = Squarify.layoutItems(items, rect: content)
-                        } else {
-                            level = Squarify.layoutLevel(tree: tree, dir: layoutNode, rect: content)
-                        }
-                        for (kid, r) in level {
-                            if kid == -1 {
-                                // Flat, quiet void — clearly "nothing here".
-                                shade(r, TypeColor.free, Surface())
-                                let pr = CGRect(x: r.minX / scale, y: r.minY / scale,
-                                                width: r.width / scale, height: r.height / scale)
-                                if pr.width >= 90, pr.height >= 30 {
-                                    outLabels.append((strip: pr, region: pr, node: -1, depth: 1, name: "Free space"))
-                                }
-                            } else {
-                                draw(kid, r, depth == 0 ? h : h * Cushion.falloff, s, depth + 1)
-                            }
-                        }
-                    }
-                    // Separation frames for unheaded dirs (headed ones have
-                    // their own frame already).
-                    if !headed {
-                        switch depth {
-                        case 0: break // window edge needs no frame
-                        case 1: frame(rect, thickness: Int(2 * scale), factor: 0.30)
-                        case 2: frame(rect, thickness: Int(scale), factor: 0.42)
-                        case 3: frame(rect, thickness: max(1, Int(scale / 2)), factor: 0.55)
-                        default:
-                            if rect.width > 28, rect.height > 28 {
-                                frame(rect, thickness: 1, factor: 0.62)
-                            }
-                        }
-                    }
-                } else {
-                    outLeaves.append(TMRect(rect: ptRect, node: node, isDir: false))
-                    shade(rect, TypeColor.forName(tree.name(node)), s)
-                }
-            }
-
-            let full = CGRect(x: 0, y: 0, width: pw, height: ph)
-            draw(rootIndex, full, Cushion.baseHeight, Surface(), 0)
         }
-        rects = outRects
-        leaves = outLeaves
-        labels = outLabels
+        if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
+            NSLog("BZ render %dx%d: %d steps, layout %.1f ms, paint %.1f ms (%d bands)",
+                  pw, ph, ops.count, laidOut.timeIntervalSince(started) * 1000,
+                  -laidOut.timeIntervalSinceNow * 1000, bands)
+        }
+        rects = out.rects
+        leaves = out.leaves
+        labels = out.labels
 
         let data = pixels.withUnsafeBufferPointer { Data(buffer: $0) }
         bitmap = CGImage(
@@ -269,6 +157,197 @@ final class TreemapNSView: NSView {
             provider: CGDataProvider(data: data as CFData)!,
             decode: nil, shouldInterpolate: false, intent: .defaultIntent
         )
+    }
+
+    /// One step of the cushion painter, in paint order.
+    nonisolated private enum PaintOp {
+        case shade(CGRect, TypeColor.RGB, Surface)
+        /// Darken a frame band around the rect (thickness in pixels).
+        case frame(CGRect, Int, Double)
+    }
+
+    /// Lays the treemap out once, in paint order: parents before children,
+    /// frames after their contents. Also fills `out` with the geometry used
+    /// for hit-testing and labels.
+    nonisolated private static func layoutOps(
+        tree: Tree, pw: Int, ph: Int, scale: CGFloat, root: Int,
+        showFree: Bool, freeBytes: UInt64, out: RenderOutput
+    ) -> [PaintOp] {
+        var ops: [PaintOp] = []
+        ops.reserveCapacity(1 << 16)
+        var colors = TypeColor.Cache()
+
+        func draw(_ node: Int, _ rect: CGRect, _ h: Double, _ surface: Surface, _ depth: Int) {
+            guard rect.width >= 0.5, rect.height >= 0.5 else { return }
+            var s = surface
+            // The view root adds no ridge: a window-wide parabola would
+            // just vignette the whole map.
+            if depth > 0 {
+                s.addRidge(rect, height: Cushion.height(rect, h))
+            }
+            let ptRect = CGRect(
+                x: rect.minX / scale, y: rect.minY / scale,
+                width: rect.width / scale, height: rect.height / scale
+            )
+            guard tree.isDir(node) else {
+                out.leaves.append(TMRect(rect: ptRect, node: node, isDir: false))
+                ops.append(.shade(rect, colors.color(tree, node), s))
+                return
+            }
+            out.rects.append(TMRect(rect: ptRect, node: node, isDir: true))
+
+            // WizTree-style framed box: big directories get a title
+            // strip on their top border and children render inside
+            // the frame — at every depth, no zooming required.
+            let headerH = (15 * scale).rounded()
+            let headed = depth >= 1
+                && rect.width >= 88 * scale
+                && rect.height >= max(58 * scale, headerH * 2.8)
+            var content = rect
+            var layoutNode = node
+            if headed {
+                // Collapse pass-through chains (a dir whose one child
+                // holds ~everything) into a single "A ▸ B" strip.
+                var stripName = tree.name(node)
+                while let first = tree.children(layoutNode).first {
+                    let fi = Int(first)
+                    guard tree.isDir(fi),
+                          Double(tree.alloc[fi]) >= 0.99 * Double(max(tree.alloc[layoutNode], 1))
+                    else { break }
+                    stripName += "  ▸  " + tree.name(fi)
+                    layoutNode = fi
+                }
+                ops.append(.shade(rect, TypeColor.strip, Surface()))
+                let strip = CGRect(x: rect.minX, y: rect.minY,
+                                   width: rect.width, height: headerH)
+                out.labels.append(TMLabel(
+                    strip: CGRect(x: strip.minX / scale, y: strip.minY / scale,
+                                  width: strip.width / scale, height: strip.height / scale),
+                    region: ptRect, node: layoutNode, depth: depth, name: stripName
+                ))
+                content = CGRect(x: rect.minX + 2, y: rect.minY + headerH,
+                                 width: rect.width - 4, height: rect.height - headerH - 2)
+            }
+
+            // Parent cushion first: covers sub-pixel children and
+            // pixel-snap slivers, so the map has no holes.
+            ops.append(.shade(content, TypeColor.dir, s))
+            if content.width >= 3, content.height >= 3 {
+                let level: [(node: Int, rect: CGRect)]
+                if depth == 0, showFree, freeBytes > 0 {
+                    // Free disk space competes for area like a file.
+                    var items: [(node: Int, size: Double)] = tree.children(layoutNode).compactMap {
+                        let sz = Double(tree.alloc[Int($0)])
+                        return sz > 0 ? (Int($0), sz) : nil
+                    }
+                    items.append((-1, Double(freeBytes)))
+                    items.sort { $0.size > $1.size }
+                    level = Squarify.layoutItems(items, rect: content)
+                } else {
+                    level = Squarify.layoutLevel(tree: tree, dir: layoutNode, rect: content)
+                }
+                for (kid, r) in level {
+                    if kid == -1 {
+                        // Flat, quiet void — clearly "nothing here".
+                        ops.append(.shade(r, TypeColor.free, Surface()))
+                        let pr = CGRect(x: r.minX / scale, y: r.minY / scale,
+                                        width: r.width / scale, height: r.height / scale)
+                        if pr.width >= 90, pr.height >= 30 {
+                            out.labels.append(TMLabel(strip: pr, region: pr, node: -1, depth: 1, name: "Free space"))
+                        }
+                    } else {
+                        draw(kid, r, depth == 0 ? h : h * Cushion.falloff, s, depth + 1)
+                    }
+                }
+            }
+            // Separation frames for unheaded dirs (headed ones have
+            // their own frame already).
+            if !headed {
+                switch depth {
+                case 0: break // window edge needs no frame
+                case 1: ops.append(.frame(rect, Int(2 * scale), 0.30))
+                case 2: ops.append(.frame(rect, Int(scale), 0.42))
+                case 3: ops.append(.frame(rect, max(1, Int(scale / 2)), 0.55))
+                default:
+                    if rect.width > 28, rect.height > 28 {
+                        ops.append(.frame(rect, 1, 0.62))
+                    }
+                }
+            }
+        }
+
+        draw(root, CGRect(x: 0, y: 0, width: pw, height: ph), Cushion.baseHeight, Surface(), 0)
+        return ops
+    }
+
+    /// Runs the paint steps for pixel rows in `rows` only. Steps are applied
+    /// in order, so any split into bands gives the same pixels as one pass.
+    nonisolated private static func paint(
+        _ ops: UnsafeBufferPointer<PaintOp>, base: UnsafeMutablePointer<UInt32>,
+        pw: Int, ph: Int, rows: Range<Int>
+    ) {
+        let by0 = rows.lowerBound, by1 = rows.upperBound
+
+        func shade(_ r: CGRect, _ rgb: TypeColor.RGB, _ s: Surface) {
+            let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
+            let y0 = max(by0, Int(r.minY.rounded())), y1 = min(by1, Int(r.maxY.rounded()))
+            guard x1 > x0, y1 > y0 else { return }
+            for py in y0..<y1 {
+                let fy = Double(py) + 0.5
+                let ny = -(2 * s.ay2 * fy + s.ay1)
+                let row = base + py * pw
+                for px in x0..<x1 {
+                    let fx = Double(px) + 0.5
+                    let nx = -(2 * s.ax2 * fx + s.ax1)
+                    let cos = (nx * Cushion.lx + ny * Cushion.ly + Cushion.lz)
+                        / (nx * nx + ny * ny + 1).squareRoot()
+                    let lum = Cushion.ambient + max(0, cos) * (1 - Cushion.ambient)
+                    let r8 = UInt32(min(255, rgb.r * lum * 255))
+                    let g8 = UInt32(min(255, rgb.g * lum * 255))
+                    let b8 = UInt32(min(255, rgb.b * lum * 255))
+                    (row + px).pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
+                }
+            }
+        }
+
+        /// Separation "grout" between directories. Multiplies what's
+        /// underneath so hues survive.
+        func frame(_ r: CGRect, thickness: Int, factor: Double) {
+            let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
+            let y0 = max(0, Int(r.minY.rounded())), y1 = min(ph, Int(r.maxY.rounded()))
+            guard x1 - x0 > thickness * 2 + 2, y1 - y0 > thickness * 2 + 2 else { return }
+            func darken(_ px: Int, _ py: Int) {
+                let p = base + py * pw + px
+                let v = p.pointee
+                let r8 = UInt32(Double(v & 0xFF) * factor)
+                let g8 = UInt32(Double((v >> 8) & 0xFF) * factor)
+                let b8 = UInt32(Double((v >> 16) & 0xFF) * factor)
+                p.pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
+            }
+            for t in 0..<thickness {
+                if (by0..<by1).contains(y0 + t) { for px in x0..<x1 { darken(px, y0 + t) } }
+                if (by0..<by1).contains(y1 - 1 - t) { for px in x0..<x1 { darken(px, y1 - 1 - t) } }
+                let v0 = max(y0 + thickness, by0), v1 = min(y1 - thickness, by1)
+                if v1 > v0 {
+                    for py in v0..<v1 {
+                        darken(x0 + t, py)
+                        darken(x1 - 1 - t, py)
+                    }
+                }
+            }
+        }
+
+        let top = CGFloat(by0), bottom = CGFloat(by1)
+        for op in ops {
+            switch op {
+            case let .shade(r, rgb, s):
+                if r.maxY.rounded() > top, r.minY.rounded() < bottom { shade(r, rgb, s) }
+            case let .frame(r, thickness, factor):
+                if r.maxY.rounded() > top, r.minY.rounded() < bottom {
+                    frame(r, thickness: thickness, factor: factor)
+                }
+            }
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

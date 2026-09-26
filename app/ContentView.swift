@@ -11,7 +11,11 @@ struct ContentView: View {
         VStack(spacing: 0) {
             ZStack {
                 Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1))
-                if model.tree != nil {
+                // Once built, the list and treemap stay alive (hidden) through
+                // a rescan: tearing them down and rebuilding them made AppKit
+                // redo its first-time setup and froze the window as the new
+                // scan landed. A new tree only reloads into the same views.
+                if model.tree != nil || model.hasShownTree {
                     HSplitView {
                         if showTable {
                             OutlinePanel(model: model)
@@ -20,12 +24,22 @@ struct ContentView: View {
                         TreemapView(model: model)
                             .frame(minWidth: 400, maxWidth: .infinity)
                     }
-                } else if model.scanning {
-                    scanningOverlay
-                } else if needsFDA {
-                    fdaOverlay
-                } else {
-                    idleOverlay
+                    // Hidden by an opaque cover below, not by opacity or hit
+                    // testing: SwiftUI re-inserts AppKit views when those change.
+                }
+                if model.tree == nil {
+                    Group {
+                        if model.scanning {
+                            scanningOverlay
+                        } else if needsFDA {
+                            fdaOverlay
+                        } else {
+                            idleOverlay
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1)))
+                    .contentShape(Rectangle())
                 }
             }
             Divider()
@@ -182,16 +196,17 @@ struct ContentView: View {
             Text(Fmt.size(model.bytes))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
                 .monospacedDigit()
-                .contentTransition(.numericText())
                 .foregroundStyle(.white)
-            Text("\(Fmt.num(model.files)) files · \(Fmt.num(model.dirs)) folders · \(String(format: "%.1f", model.elapsed))s")
+            Text("\(Fmt.num(model.files)) files · \(Fmt.num(model.dirs)) folders · \(String(format: "%.2f", model.elapsed))s")
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-            ProgressView()
-                .controlSize(.small)
-                .tint(.white)
         }
-        .animation(.default, value: model.bytes)
+        // No spinner: the counters are the progress, and a ProgressView is an
+        // AppKit view whose insertion recomputed the window's key-view loop
+        // (laying out the hidden list) just as each scan started.
+        // No numeric-text transition: its blur is rasterized on the CPU and
+        // stalled the main thread for most of a short scan. Plain digits
+        // updated at the 30 Hz poll count up smoothly on their own.
     }
 
     private var idleOverlay: some View {
@@ -274,6 +289,59 @@ struct ContentView: View {
 /// Left panel: a real NSOutlineView — the same control as Finder's list
 /// view. Native disclosure triangles, real file icons, alternating rows,
 /// keyboard navigation.
+/// List cells laid out by frame, not Auto Layout: AppKit re-lays out every
+/// row as it reloads, and solving constraints per row made reloads stall.
+final class NameCell: NSTableCellView {
+    private static let font = NSFont.systemFont(ofSize: 13)
+    private static let lineHeight = ceil(font.ascender - font.descender + font.leading)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let iv = NSImageView()
+        let tf = NSTextField(labelWithString: "")
+        tf.font = Self.font
+        tf.lineBreakMode = .byTruncatingMiddle
+        addSubview(iv)
+        addSubview(tf)
+        imageView = iv
+        textField = tf
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        let h = bounds.height
+        imageView?.frame = NSRect(x: 2, y: ((h - 16) / 2).rounded(), width: 16, height: 16)
+        textField?.frame = NSRect(x: 23, y: ((h - Self.lineHeight) / 2).rounded(),
+                                  width: max(0, bounds.width - 25), height: Self.lineHeight)
+    }
+}
+
+/// A right-aligned figure (size or percentage) in the list.
+final class ValueCell: NSTableCellView {
+    private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private static let lineHeight = ceil(font.ascender - font.descender + font.leading)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let tf = NSTextField(labelWithString: "")
+        tf.font = Self.font
+        tf.textColor = .secondaryLabelColor
+        tf.alignment = .right
+        addSubview(tf)
+        textField = tf
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        textField?.frame = NSRect(x: 0, y: ((bounds.height - Self.lineHeight) / 2).rounded(),
+                                  width: max(0, bounds.width - 2), height: Self.lineHeight)
+    }
+}
+
 struct OutlinePanel: NSViewRepresentable {
     let model: ScanModel
 
@@ -305,8 +373,12 @@ struct OutlinePanel: NSViewRepresentable {
             if t !== tree || model.viewRoot != viewRoot {
                 tree = t
                 viewRoot = model.viewRoot
+                let started = Date()
                 roots = t.children(viewRoot).map { Item(id: Int($0), tree: t) }
                 outline?.reloadData()
+                if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
+                    NSLog("BZ list reload: %.1f ms", -started.timeIntervalSinceNow * 1000)
+                }
             }
         }
 
@@ -328,8 +400,28 @@ struct OutlinePanel: NSViewRepresentable {
             } else {
                 img = NSWorkspace.shared.icon(for: UTType(filenameExtension: key) ?? .data)
             }
-            iconCache[key] = img
-            return img
+            // Pre-render to a small bitmap: workspace icons are lazy, and every
+            // row asking IconServices for one again made list reloads slow.
+            let scale = outline?.window?.backingScaleFactor ?? 2
+            let px = Int(16 * scale)
+            let flat: NSImage
+            if let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+            ) {
+                rep.size = NSSize(width: 16, height: 16)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                img.draw(in: NSRect(x: 0, y: 0, width: 16, height: 16))
+                NSGraphicsContext.restoreGraphicsState()
+                flat = NSImage(size: NSSize(width: 16, height: 16))
+                flat.addRepresentation(rep)
+            } else {
+                flat = img
+            }
+            iconCache[key] = flat
+            return flat
         }
 
         // MARK: data source
@@ -352,26 +444,9 @@ struct OutlinePanel: NSViewRepresentable {
             let reuse = NSUserInterfaceItemIdentifier("cell-\(colID)")
 
             if colID == "name" {
-                let cell = (v.makeView(withIdentifier: reuse, owner: nil) as? NSTableCellView) ?? {
-                    let c = NSTableCellView()
+                let cell = (v.makeView(withIdentifier: reuse, owner: nil) as? NameCell) ?? {
+                    let c = NameCell()
                     c.identifier = reuse
-                    let iv = NSImageView()
-                    iv.translatesAutoresizingMaskIntoConstraints = false
-                    let tf = NSTextField(labelWithString: "")
-                    tf.translatesAutoresizingMaskIntoConstraints = false
-                    tf.font = .systemFont(ofSize: 13)
-                    tf.lineBreakMode = .byTruncatingMiddle
-                    c.addSubview(iv); c.addSubview(tf)
-                    c.imageView = iv; c.textField = tf
-                    NSLayoutConstraint.activate([
-                        iv.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
-                        iv.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                        iv.widthAnchor.constraint(equalToConstant: 16),
-                        iv.heightAnchor.constraint(equalToConstant: 16),
-                        tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 5),
-                        tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -2),
-                        tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                    ])
                     return c
                 }()
                 cell.textField?.stringValue = tree.name(it.id)
@@ -379,21 +454,9 @@ struct OutlinePanel: NSViewRepresentable {
                 return cell
             }
 
-            let cell = (v.makeView(withIdentifier: reuse, owner: nil) as? NSTableCellView) ?? {
-                let c = NSTableCellView()
+            let cell = (v.makeView(withIdentifier: reuse, owner: nil) as? ValueCell) ?? {
+                let c = ValueCell()
                 c.identifier = reuse
-                let tf = NSTextField(labelWithString: "")
-                tf.translatesAutoresizingMaskIntoConstraints = false
-                tf.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-                tf.textColor = .secondaryLabelColor
-                tf.alignment = .right
-                c.addSubview(tf)
-                c.textField = tf
-                NSLayoutConstraint.activate([
-                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -2),
-                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                ])
                 return c
             }()
             if colID == "size" {
@@ -409,9 +472,10 @@ struct OutlinePanel: NSViewRepresentable {
         }
 
         func outlineViewSelectionDidChange(_ n: Notification) {
-            guard let outline else { return }
+            // While a rescan runs the list still shows the old tree, hidden.
+            guard let outline, let model, model.tree != nil, model.tree === tree else { return }
             if let it = outline.item(atRow: outline.selectedRow) as? Item {
-                model?.selection = it.id
+                model.selection = it.id
             }
         }
 

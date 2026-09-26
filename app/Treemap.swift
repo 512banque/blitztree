@@ -7,6 +7,16 @@ nonisolated struct TMRect {
     var isDir: Bool
 }
 
+/// A directory title strip: `strip` is the bar (text + hit target), `region`
+/// the whole directory (hover boundary), both in view points.
+nonisolated struct TMLabel {
+    var strip: CGRect
+    var region: CGRect
+    var node: Int
+    var depth: Int
+    var name: String
+}
+
 /// Squarified treemap layout (Bruls, Huizing, van Wijk) over the flat tree.
 nonisolated enum Squarify {
     /// Lay out the direct children of `dir` into `rect` (one level, no
@@ -133,6 +143,32 @@ nonisolated enum TypeColor {
     /// Frame + title strip of a labeled directory (WizTree-style box).
     /// Flat-shaded, so pick the pre-lighting value for a ~#26262B result.
     static let strip: RGB = (0.165, 0.165, 0.195)
+
+    /// Per-render colour lookup that reads extensions straight from the
+    /// tree's name bytes: no String per file, one real lookup per extension.
+    struct Cache {
+        private var byExt: [UInt64: RGB] = [:]
+
+        mutating func color(_ tree: Tree, _ node: Int) -> RGB {
+            let start = Int(tree.nameOff[node]), end = Int(tree.nameOff[node + 1])
+            var dot = end - 1
+            while dot > start, tree.nameBlob[dot] != UInt8(ascii: ".") { dot -= 1 }
+            // No extension, or a dotfile with nothing before the dot.
+            guard dot > start else { return TypeColor.plain }
+            let len = end - dot - 1
+            guard len > 0, len <= 8 else { return TypeColor.forName(tree.name(node)) }
+            var key: UInt64 = 0
+            for i in (dot + 1)..<end {
+                var b = tree.nameBlob[i]
+                if b >= 65, b <= 90 { b += 32 } // ASCII lowercase
+                key = key << 8 | UInt64(b)
+            }
+            if let c = byExt[key] { return c }
+            let c = TypeColor.forName(tree.name(node))
+            byExt[key] = c
+            return c
+        }
+    }
 
     static func forName(_ name: String) -> RGB {
         guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return plain }
