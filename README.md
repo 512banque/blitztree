@@ -8,7 +8,7 @@ WizTree for macOS. A native disk treemap that scans a whole Mac (3.5M files) in 
 
 ## Download
 
-**[⬇ BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)**: open it and drag BlitzTree into Applications. Apple Silicon, macOS 26 or later.
+**[⬇ BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)**: open it and drag BlitzTree into Applications. Apple Silicon, macOS 14 Sonoma or later (Liquid Glass on macOS 26+).
 
 On first launch:
 

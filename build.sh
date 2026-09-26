@@ -4,7 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
-MIN_MACOS=26.0
+# Last three macOS releases. Newer-only UI (Liquid Glass) is gated with
+# #available, so the compiler enforces that nothing newer slips in unguarded.
+MIN_MACOS=14.0
+export MACOSX_DEPLOYMENT_TARGET=$MIN_MACOS
 
 echo "==> Rust engine"
 cargo build --release

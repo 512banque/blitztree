@@ -32,7 +32,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 760, minHeight: 500)
         .toolbar { toolbar }
-        .toolbar(removing: .title)
+        .hidingWindowTitle()
         .onAppear {
             // Never start a whole-disk scan without FDA: every protected
             // app container would fire a permission prompt.
@@ -74,21 +74,30 @@ struct ContentView: View {
 
     // MARK: toolbar
 
+    @ViewBuilder
+    private var titleCrumbs: some View {
+        if let tree = model.tree {
+            breadcrumbs(tree: tree)
+        } else {
+            Text(displayRootName())
+                .font(.system(.body, design: .rounded).weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            if let tree = model.tree {
-                breadcrumbs(tree: tree)
-            } else {
-                Text(displayRootName())
-                    .font(.system(.body, design: .rounded).weight(.semibold))
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-            }
+        // macOS 26+: crumbs sit bare in the Liquid Glass toolbar, pushed apart
+        // from the controls by a flexible spacer. Older systems lay out the
+        // classic toolbar themselves.
+        if #available(macOS 26, *) {
+            ToolbarItem(placement: .navigation) { titleCrumbs }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.flexible)
+        } else {
+            ToolbarItem(placement: .navigation) { titleCrumbs }
         }
-        .sharedBackgroundVisibility(.hidden)
-
-        ToolbarSpacer(.flexible)
 
         ToolbarItemGroup(placement: .automatic) {
             Menu {
@@ -111,7 +120,9 @@ struct ContentView: View {
             .help("Rescan")
         }
 
-        ToolbarSpacer(.fixed, placement: .automatic)
+        if #available(macOS 26, *) {
+            ToolbarSpacer(.fixed, placement: .automatic)
+        }
 
         ToolbarItemGroup(placement: .automatic) {
             Toggle(isOn: $model.showFreeSpace) {
@@ -484,5 +495,17 @@ struct OutlinePanel: NSViewRepresentable {
         context.coordinator.model = model
         context.coordinator.rebuildIfNeeded()
         context.coordinator.syncSelection()
+    }
+}
+
+private extension View {
+    /// The breadcrumbs are the title; drop the duplicate window title.
+    @ViewBuilder
+    func hidingWindowTitle() -> some View {
+        if #available(macOS 15, *) {
+            toolbar(removing: .title)
+        } else {
+            navigationTitle("")
+        }
     }
 }
