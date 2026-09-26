@@ -2,79 +2,53 @@
 
 # BlitzTree
 
-WizTree for macOS. A native disk treemap that scans a whole Mac (3.6M files) in about 14 seconds.
-
-> i got mad there was nothing as fast and as nice as wiztree for my macbook so i made this pretty quickly in like 1 hour with only claude fable 5. its pretty good
+A fast, native disk-space treemap for macOS, in the spirit of WizTree. It scans a whole Mac (3.6M files) in about 14 seconds.
 
 ![BlitzTree scanning /Applications](assets/screenshot.png)
 
-## Download
+## Install
 
-**[⬇ BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)**: open it and drag BlitzTree into Applications. Apple Silicon, macOS 14 Sonoma or later (Liquid Glass on macOS 26+).
+**[Download BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)** and drag the app into Applications. Requires Apple Silicon and macOS 14 or later.
 
-On first launch:
+The app is not notarized. On first launch, allow it in System Settings → Privacy & Security → **Open Anyway**, then grant Full Disk Access when prompted and relaunch.
 
-1. The app is not notarized, so macOS blocks it. Go to System Settings → Privacy & Security, scroll down, and click **Open Anyway**.
-2. Grant Full Disk Access when the app asks, then click **Relaunch**.
+## Features
 
-## What you get
+- Cushion-shaded treemap colored by file type, with a synced Finder-style outline list
+- Zoom into folders, reveal in Finder, or move to Trash (with confirmation)
+- Live progress while scanning, and an optional free-space block
+- Native AppKit/SwiftUI, with the Liquid Glass design on macOS 26 and later
+- No network access, no telemetry
 
-- Cushion-shaded treemap in the WinDirStat/WizTree style, colored by file type, with a title strip on each folder
-- Finder-style outline list beside it, synced with the map
-- Live progress while it scans, and an optional block for free space
-- Double-click to zoom in; breadcrumbs to zoom out; right-click to reveal in Finder, copy the path, or move to Trash (with a confirmation)
-- No network access and no telemetry
+## Performance
 
-## Speed
-
-| Home folder, 3.1M entries (M4) | time |
+| Home folder, 3.1M entries (M4) | Time |
 |---|---|
 | **BlitzTree** | **10.2 s** |
-| parallel `readdir` + `lstat` (what most scanners do) | 14.4 s |
+| Parallel `readdir` + `lstat` | 14.4 s |
 | `du -skx` | 65.3 s |
 
-Full numbers and method are in [BENCHMARKS.md](BENCHMARKS.md).
+- `getattrlistbulk(2)` reads a whole directory's metadata in one syscall instead of one `stat` per file.
+- A Rust worker pool keeps many directories in flight, and scan threads run at user-interactive QoS so they stay on performance cores.
 
-Why it is fast:
-
-- `getattrlistbulk(2)` returns the metadata for a whole directory in one syscall, so there is no `stat` per file.
-- A rayon pool keeps many directories in flight at once, which is where APFS scales.
-- Scan threads run at user-interactive QoS. At a GUI app's default QoS they land on efficiency cores and the scan takes twice as long.
-- `searchfs(2)` looks like the macOS answer to reading NTFS's MFT, but it was 5× slower: it is one sequential walk of the catalog and cannot be parallelized.
+Method, full results and a comparison with other tools: [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Accuracy
 
-- Sizes are what the disk actually allocates (the same number as `du`), not apparent length.
-- A hard-linked file is counted once.
-- Only one volume is measured: disk images, Recovery and other volumes mounted inside it are skipped.
-- Folders that are only in iCloud (evicted to the cloud) are not opened, so a scan never starts a download.
-- Root-only system areas such as the Spotlight index and unified logs cannot be read without elevation. The status bar shows the size of that gap instead of hiding it.
+Sizes are allocated bytes, matching `du`. Hard-linked files count once, the scan stays on one volume, and cloud-only iCloud folders are never downloaded. Root-only system data that no app can read is reported in the status bar instead of hidden.
 
-## Architecture
+## Build from source
 
-```mermaid
-flowchart LR
-    subgraph rust [Rust engine]
-        W["getattrlistbulk workers"] --> T["arena tree,\nbottom-up sizes"]
-        T --> F["flat arrays\n(CSR children, name blob)"]
-    end
-    F -- "C FFI, zero-copy" --> S["Swift Tree"]
-    S --> L["squarified layout"] --> C["per-pixel cushion shader"] --> V["NSView bitmap\n+ title strips"]
-    S --> O["NSOutlineView list"]
-```
-
-During a scan the UI reads atomic counters 30 times a second. When the scan ends, the tree crosses the FFI once as flat arrays, and Swift reads them in place with no serialization and no copies.
-
-## Build
-
-Needs Xcode 26 or later (for the Icon Composer icon and Liquid Glass APIs) and Rust.
+Requires Xcode 26 or later and Rust.
 
 ```sh
-./build.sh                  # → build/BlitzTree.app
-./deploy.sh                 # build and install to /Applications
-cargo test --release        # engine tests
+./build.sh              # build/BlitzTree.app
+./deploy.sh             # build and install to /Applications
+cargo test --release    # engine tests
 ```
 
-`BlitzTree /some/path` scans that folder instead of the whole disk.
+The Rust engine hands the finished tree to the Swift UI as flat arrays over a C interface, with no copying. `BlitzTree <path>` scans a specific folder.
+
+## License
 
 MIT
