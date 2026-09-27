@@ -195,6 +195,7 @@ mod tests {
             size: 0,
             alloc: 0,
             is_dir: true,
+            complete: true,
             n_files: 0,
             children: 1..dirs as u32 + 1,
         }];
@@ -206,6 +207,7 @@ mod tests {
                 size: 0,
                 alloc: 0,
                 is_dir: true,
+                complete: true,
                 n_files: 0,
                 children: start..start + files_per_dir as u32,
             });
@@ -219,6 +221,7 @@ mod tests {
                     size,
                     alloc: size.div_ceil(4096) * 4096,
                     is_dir: false,
+                    complete: true,
                     n_files: 0,
                     children: 0..0,
                 });

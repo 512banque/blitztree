@@ -8,7 +8,7 @@ pub mod ffi;
 pub mod searchfs;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::{c_int, c_void, CString};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -78,6 +78,9 @@ pub struct Node {
     /// Allocated (on-disk) size in bytes; subtree total after aggregate().
     pub alloc: u64,
     pub is_dir: bool,
+    /// False when an entry was unreadable or a cloud/mount boundary was skipped
+    /// anywhere in this subtree. The observed sizes then describe a partial walk.
+    pub complete: bool,
     /// Subtree file count after aggregate().
     pub n_files: u32,
     /// Direct children occupy one contiguous arena batch, all after this
@@ -98,6 +101,10 @@ pub struct Progress {
     pub dirs: AtomicU64,
     pub bytes: AtomicU64,
     pub errors: AtomicU64,
+    pub entry_errors: AtomicU64,
+    pub invalid_names: AtomicU64,
+    pub skipped_cloud_dirs: AtomicU64,
+    pub skipped_mount_points: AtomicU64,
 }
 
 struct RawEntry {
@@ -114,7 +121,7 @@ struct RawEntry {
 }
 
 /// Read all entries of one directory in bulk. Returns None if the dir can't be opened.
-fn read_dir_bulk(path: &Path, progress: &Progress) -> Option<Vec<RawEntry>> {
+fn read_dir_bulk(path: &Path, progress: &Progress) -> Option<(Vec<RawEntry>, bool)> {
     BULK_BUFFER.with_borrow_mut(|buf| read_dir_bulk_buffered(path, buf, progress))
 }
 
@@ -122,8 +129,13 @@ fn read_dir_bulk_buffered(
     path: &Path,
     buf: &mut [u8],
     progress: &Progress,
-) -> Option<Vec<RawEntry>> {
-    let cpath = CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+) -> Option<(Vec<RawEntry>, bool)> {
+    let cpath = CString::new(path.as_os_str().as_encoded_bytes())
+        .ok()
+        .or_else(|| {
+            progress.errors.fetch_add(1, Ordering::Relaxed);
+            None
+        })?;
     let fd = unsafe {
         libc::open(
             cpath.as_ptr(),
@@ -159,6 +171,7 @@ fn read_dir_bulk_buffered(
     };
 
     let mut entries = Vec::new();
+    let mut complete = true;
     loop {
         let n = unsafe {
             getattrlistbulk(
@@ -172,6 +185,7 @@ fn read_dir_bulk_buffered(
         if n <= 0 {
             if n < 0 {
                 progress.errors.fetch_add(1, Ordering::Relaxed);
+                complete = false;
             }
             break;
         }
@@ -179,12 +193,12 @@ fn read_dir_bulk_buffered(
         for _ in 0..n {
             let entry = &buf[off..];
             let len = u32_at(entry, 0) as usize;
-            parse_entry(&entry[..len], &mut entries);
+            complete &= parse_entry(&entry[..len], &mut entries, progress);
             off += len;
         }
     }
     unsafe { libc::close(fd) };
-    Some(entries)
+    Some((entries, complete))
 }
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
@@ -204,7 +218,7 @@ fn u64_at(b: &[u8], off: usize) -> u64 {
 /// FLAGS, FILEID), then dir attrs (MOUNTSTATUS), then file attrs (LINKCOUNT,
 /// TOTALSIZE, ALLOCSIZE). Dir attrs come back only for directories and file
 /// attrs only for files.
-fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
+fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>, progress: &Progress) -> bool {
     let mut off = 4usize; // skip length
     let ret_common = u32_at(e, off);
     let ret_dir = u32_at(e, off + 8);
@@ -215,7 +229,9 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         let err = u32_at(e, off);
         off += 4;
         if err != 0 {
-            return;
+            progress.entry_errors.fetch_add(1, Ordering::Relaxed);
+            progress.errors.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
     }
 
@@ -226,7 +242,14 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         let start = (off as isize + data_off) as usize;
         // data_len includes the trailing NUL
         let raw = &e[start..start + data_len.saturating_sub(1)];
-        name = std::str::from_utf8(raw).unwrap_or("");
+        name = match std::str::from_utf8(raw) {
+            Ok(name) => name,
+            Err(_) => {
+                progress.invalid_names.fetch_add(1, Ordering::Relaxed);
+                progress.errors.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+        };
         off += 8;
     }
 
@@ -277,7 +300,9 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
     }
 
     if name.is_empty() {
-        return;
+        progress.invalid_names.fetch_add(1, Ordering::Relaxed);
+        progress.errors.fetch_add(1, Ordering::Relaxed);
+        return false;
     }
     out.push(RawEntry {
         name: name.into(),
@@ -288,38 +313,71 @@ fn parse_entry(e: &[u8], out: &mut Vec<RawEntry>) {
         alloc,
         hardlink: (!is_dir && links > 1).then_some((dev, file_id)),
     });
+    true
 }
 
 // ---- Parallel walk ----
 
+struct Arena {
+    nodes: Vec<Node>,
+    /// Attribute an inode's bytes to its lexicographically first scanned path,
+    /// independently of worker scheduling. This is accounting, not an estimate
+    /// of how many bytes deleting any one of its links would reclaim.
+    hardlinks: HashMap<(u32, u64), u32>,
+}
+
+impl Arena {
+    fn path_parts(&self, mut i: u32) -> Vec<&str> {
+        let mut parts = Vec::new();
+        while i != NO_PARENT {
+            let node = &self.nodes[i as usize];
+            parts.push(node.name.as_ref());
+            i = node.parent;
+        }
+        parts.reverse();
+        parts
+    }
+
+    /// Called under the arena lock after inserting a file node, before totals
+    /// are aggregated. Returns newly accounted bytes for the progress counter.
+    fn account_file(&mut self, i: u32, hardlink: Option<(u32, u64)>) -> u64 {
+        let Some(key) = hardlink else {
+            return self.nodes[i as usize].alloc;
+        };
+        let Some(&previous) = self.hardlinks.get(&key) else {
+            self.hardlinks.insert(key, i);
+            return self.nodes[i as usize].alloc;
+        };
+        let loser = if self.path_parts(i) < self.path_parts(previous) {
+            self.nodes[i as usize].size = self.nodes[previous as usize].size;
+            self.nodes[i as usize].alloc = self.nodes[previous as usize].alloc;
+            self.hardlinks.insert(key, i);
+            previous
+        } else {
+            i
+        };
+        self.nodes[loser as usize].size = 0;
+        self.nodes[loser as usize].alloc = 0;
+        0
+    }
+}
+
 struct Shared<'a> {
-    arena: Mutex<Vec<Node>>,
-    /// Hard-linked files already counted; later links contribute zero bytes,
-    /// matching `du` and what deleting them actually frees.
-    hardlinks: Mutex<HashSet<(u32, u64)>>,
+    arena: Mutex<Arena>,
     progress: &'a Progress,
 }
 
 fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf, dir_idx: u32) {
-    let Some(mut entries) = read_dir_bulk(&dir_path, shared.progress) else {
+    let Some((entries, complete)) = read_dir_bulk(&dir_path, shared.progress) else {
+        shared.arena.lock().unwrap().nodes[dir_idx as usize].complete = false;
         return;
     };
     if entries.is_empty() {
+        if !complete {
+            shared.arena.lock().unwrap().nodes[dir_idx as usize].complete = false;
+        }
         return;
     }
-
-    if entries.iter().any(|e| e.hardlink.is_some()) {
-        let mut seen = shared.hardlinks.lock().unwrap();
-        for e in &mut entries {
-            if let Some(key) = e.hardlink {
-                if !seen.insert(key) {
-                    e.size = 0;
-                    e.alloc = 0;
-                }
-            }
-        }
-    }
-
     let mut n_files = 0u64;
     let mut n_dirs = 0u64;
     let mut bytes = 0u64;
@@ -327,41 +385,54 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
     for (i, e) in entries.iter().enumerate() {
         if e.is_dir {
             n_dirs += 1;
-            if !e.dataless && !e.mount_point {
+            if e.mount_point {
+                shared
+                    .progress
+                    .skipped_mount_points
+                    .fetch_add(1, Ordering::Relaxed);
+            } else if e.dataless {
+                shared
+                    .progress
+                    .skipped_cloud_dirs
+                    .fetch_add(1, Ordering::Relaxed);
+            } else {
                 subdirs.push((i as u32, dir_path.join(&*e.name)));
             }
         } else {
             n_files += 1;
-            bytes += e.alloc;
         }
     }
     shared.progress.files.fetch_add(n_files, Ordering::Relaxed);
     shared.progress.dirs.fetch_add(n_dirs, Ordering::Relaxed);
-    shared.progress.bytes.fetch_add(bytes, Ordering::Relaxed);
-
-    // Reserve arena slots for all children under one short lock.
+    // Keep upstream's contiguous child batches and move names into the arena.
     let base = {
         let mut arena = shared.arena.lock().unwrap();
-        let base = arena.len() as u32;
+        arena.nodes[dir_idx as usize].complete = complete;
+        let base = arena.nodes.len() as u32;
         let end = base + entries.len() as u32;
         debug_assert!(dir_idx < base);
-        arena.reserve(entries.len());
+        arena.nodes.reserve(entries.len());
         for e in entries {
-            arena.push(Node {
+            let index = arena.nodes.len() as u32;
+            arena.nodes.push(Node {
                 name: e.name,
                 parent: dir_idx,
                 size: e.size,
                 alloc: e.alloc,
                 is_dir: e.is_dir,
+                complete: !e.is_dir || (!e.dataless && !e.mount_point),
                 n_files: 0,
                 children: 0..0,
             });
+            if !e.is_dir {
+                bytes += arena.account_file(index, e.hardlink);
+            }
         }
-        debug_assert_eq!(arena.len(), end as usize);
-        arena[dir_idx as usize].children = base..end;
+        debug_assert_eq!(arena.nodes.len(), end as usize);
+        arena.nodes[dir_idx as usize].children = base..end;
         base
     };
-
+    shared.progress.bytes.fetch_add(bytes, Ordering::Relaxed);
     for (i, child_path) in subdirs {
         let child_idx = base + i;
         scope.spawn(move |s| walk(s, shared, child_path, child_idx));
@@ -399,24 +470,32 @@ fn fast_pool() -> rayon::ThreadPool {
 /// Scan `root` and return the finished tree with aggregated subtree sizes.
 pub fn scan(root: &Path, progress: &Progress) -> Scan {
     let root_name: Box<str> = root.to_string_lossy().into_owned().into_boxed_str();
-    let arena = Mutex::new(vec![Node {
-        name: root_name,
-        parent: NO_PARENT,
-        size: 0,
-        alloc: 0,
-        is_dir: true,
-        n_files: 0,
-        children: 0..0,
-    }]);
-    let shared = Shared {
-        arena,
-        hardlinks: Mutex::new(HashSet::new()),
-        progress,
-    };
+    let arena = Mutex::new(Arena {
+        nodes: vec![Node {
+            name: root_name,
+            parent: NO_PARENT,
+            size: 0,
+            alloc: 0,
+            is_dir: true,
+            complete: true,
+            n_files: 0,
+            children: 0..0,
+        }],
+        hardlinks: HashMap::new(),
+    });
+    let shared = Shared { arena, progress };
 
-    fast_pool().scope(|s| walk(s, &shared, root.to_path_buf(), 0));
+    use std::os::macos::fs::MetadataExt;
+    let root_is_cloud_only =
+        std::fs::symlink_metadata(root).is_ok_and(|m| m.st_flags() & SF_DATALESS != 0);
+    if root_is_cloud_only {
+        progress.skipped_cloud_dirs.fetch_add(1, Ordering::Relaxed);
+        shared.arena.lock().unwrap().nodes[0].complete = false;
+    } else {
+        fast_pool().scope(|s| walk(s, &shared, root.to_path_buf(), 0));
+    }
 
-    let mut nodes = shared.arena.into_inner().unwrap();
+    let mut nodes = shared.arena.into_inner().unwrap().nodes;
     aggregate(&mut nodes);
     Scan {
         nodes,
@@ -427,7 +506,7 @@ pub fn scan(root: &Path, progress: &Progress) -> Scan {
 /// Count-only walk with no tree building: measures the pure syscall floor.
 pub fn scan_count(root: &Path, progress: &Progress) {
     fn go<'s>(scope: &rayon::Scope<'s>, progress: &'s Progress, dir: PathBuf) {
-        let Some(entries) = read_dir_bulk(&dir, progress) else {
+        let Some((entries, _complete)) = read_dir_bulk(&dir, progress) else {
             return;
         };
         let mut n_files = 0u64;
@@ -458,14 +537,20 @@ pub fn scan_count(root: &Path, progress: &Progress) {
 fn aggregate(nodes: &mut [Node]) {
     for i in (1..nodes.len()).rev() {
         let parent = nodes[i].parent as usize;
-        let (size, alloc, nf) = {
+        let (size, alloc, nf, complete) = {
             let n = &nodes[i];
-            (n.size, n.alloc, if n.is_dir { n.n_files } else { 1 })
+            (
+                n.size,
+                n.alloc,
+                if n.is_dir { n.n_files } else { 1 },
+                n.complete,
+            )
         };
         let p = &mut nodes[parent];
         p.size += size;
         p.alloc += alloc;
         p.n_files += nf;
+        p.complete &= complete;
     }
 }
 
@@ -517,12 +602,21 @@ mod tests {
     #[test]
     fn bulk_parser_preserves_cloud_mount_and_hardlink_metadata() {
         let mut entries = Vec::new();
-        parse_entry(&bulk_record("cloud", true, SF_DATALESS, 0, 1), &mut entries);
+        parse_entry(
+            &bulk_record("cloud", true, SF_DATALESS, 0, 1),
+            &mut entries,
+            &Progress::default(),
+        );
         parse_entry(
             &bulk_record("mounted", true, 0, DIR_MNTSTATUS_MNTPOINT, 1),
             &mut entries,
+            &Progress::default(),
         );
-        parse_entry(&bulk_record("linked-é", false, 0, 0, 2), &mut entries);
+        parse_entry(
+            &bulk_record("linked-é", false, 0, 0, 2),
+            &mut entries,
+            &Progress::default(),
+        );
         assert_eq!(entries.len(), 3);
         assert!(entries[0].is_dir && entries[0].dataless && !entries[0].mount_point);
         assert!(entries[1].is_dir && !entries[1].dataless && entries[1].mount_point);
@@ -607,6 +701,97 @@ mod tests {
             seen.iter().all(|&visited| visited),
             "every node is reachable"
         );
+    }
+
+    fn node(name: &str, parent: u32, is_dir: bool) -> Node {
+        Node {
+            name: name.into(),
+            parent,
+            size: if is_dir { 0 } else { 8192 },
+            alloc: if is_dir { 0 } else { 4096 },
+            is_dir,
+            complete: true,
+            n_files: 0,
+            children: 0..0,
+        }
+    }
+
+    #[test]
+    fn hardlink_owner_does_not_depend_on_discovery_order() {
+        for order in [[3, 4, 5], [5, 3, 4], [4, 5, 3]] {
+            let mut arena = Arena {
+                nodes: vec![
+                    node("/root", NO_PARENT, true),
+                    node("a", 0, true),
+                    node("z", 0, true),
+                    node("a", 2, false),
+                    node("z", 1, false),
+                    node("y", 1, false),
+                ],
+                hardlinks: HashMap::new(),
+            };
+            let added: u64 = order
+                .into_iter()
+                .map(|i| arena.account_file(i, Some((7, 42))))
+                .sum();
+            assert_eq!(added, 4096, "progress counts the inode once");
+            assert_eq!(arena.nodes[3].alloc, 0); // /root/z/a
+            assert_eq!(arena.nodes[4].alloc, 0); // /root/a/z
+            assert_eq!(arena.nodes[5].alloc, 4096); // /root/a/y wins every time
+            assert_eq!(arena.nodes[5].size, 8192);
+            aggregate(&mut arena.nodes);
+            assert_eq!(arena.nodes[0].alloc, 4096);
+            assert_eq!(arena.nodes[0].size, 8192);
+            assert_eq!(arena.nodes[0].n_files, 3);
+        }
+    }
+
+    #[test]
+    fn incomplete_subtrees_propagate_without_hiding_healthy_siblings() {
+        let mut nodes = vec![
+            node("/root", NO_PARENT, true),
+            node("partial", 0, true),
+            node("healthy", 0, true),
+            node("unreadable-or-skipped", 1, true),
+            node("file", 2, false),
+        ];
+        nodes[3].complete = false;
+        aggregate(&mut nodes);
+        assert!(!nodes[0].complete);
+        assert!(!nodes[1].complete);
+        assert!(nodes[2].complete);
+        assert_eq!(
+            nodes[0].alloc, 4096,
+            "partial scans still expose observed bytes"
+        );
+    }
+
+    #[test]
+    fn entry_errors_are_reported_instead_of_silently_dropped() {
+        let mut bytes = vec![0u8; 28];
+        bytes[4..8].copy_from_slice(&ATTR_CMN_ERROR.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(libc::EACCES as u32).to_le_bytes());
+        let progress = Progress::default();
+        let mut entries = Vec::new();
+        parse_entry(&bytes, &mut entries, &progress);
+        assert!(entries.is_empty());
+        assert_eq!(progress.errors.load(Ordering::Relaxed), 1);
+        assert_eq!(progress.entry_errors.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn invalid_utf8_is_not_replaced_with_an_actionable_path() {
+        let mut bytes = vec![0u8; 34];
+        bytes[4..8].copy_from_slice(&ATTR_CMN_NAME.to_le_bytes());
+        bytes[24..28].copy_from_slice(&8u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&2u32.to_le_bytes());
+        bytes[32] = 0xff;
+        let progress = Progress::default();
+        let mut entries = Vec::new();
+        parse_entry(&bytes, &mut entries, &progress);
+        assert!(entries.is_empty());
+        assert_eq!(progress.errors.load(Ordering::Relaxed), 1);
+        assert_eq!(progress.invalid_names.load(Ordering::Relaxed), 1);
     }
 
     #[test]
