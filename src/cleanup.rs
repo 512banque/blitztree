@@ -1,6 +1,6 @@
 //! The Clean Up panel's folder recognition, shared with the JSON CLI.
 //! These are name/structure heuristics, not authorization to delete anything.
-use crate::{Scan, NO_PARENT};
+use crate::{Tree, NO_PARENT};
 
 pub const MIN_BYTES: u64 = 50_000_000;
 
@@ -54,26 +54,23 @@ pub struct Candidate {
     pub kind: Kind,
 }
 
-fn contains(scan: &Scan, directory: u32, name: &str) -> bool {
+fn contains(t: &Tree, directory: u32, name: &str) -> bool {
     directory != NO_PARENT
-        && scan.nodes[directory as usize]
-            .children
-            .clone()
-            .any(|i| &*scan.nodes[i as usize].name == name)
+        && t.kids(directory as usize)
+            .iter()
+            .any(|&i| t.name(i as usize) == name)
 }
 
-fn kind(scan: &Scan, i: u32) -> Option<Kind> {
-    let node = &scan.nodes[i as usize];
-    let parent = node.parent;
-    let parent_node = (parent != NO_PARENT).then(|| &scan.nodes[parent as usize]);
-    let parent_name = parent_node.map_or("", |n| &*n.name);
+fn kind(t: &Tree, i: u32) -> Option<Kind> {
+    let parent = t.parents[i as usize];
+    let parent_name = if parent != NO_PARENT { t.name(parent as usize) } else { "" };
     // Marker lookups happen only for the named artifact, not every sibling.
-    match &*node.name {
+    match t.name(i as usize) {
         "node_modules" => Some(Kind::NodeModules),
         ".venv" => Some(Kind::PythonEnvironment),
-        "venv" if contains(scan, i, "pyvenv.cfg") => Some(Kind::PythonEnvironment),
-        "target" if contains(scan, parent, "Cargo.toml") => Some(Kind::RustBuild),
-        ".next" if contains(scan, parent, "package.json") => Some(Kind::NextBuild),
+        "venv" if contains(t, i, "pyvenv.cfg") => Some(Kind::PythonEnvironment),
+        "target" if contains(t, parent, "Cargo.toml") => Some(Kind::RustBuild),
+        ".next" if contains(t, parent, "package.json") => Some(Kind::NextBuild),
         "DerivedData" if parent_name == "Xcode" => Some(Kind::XcodeDerivedData),
         "iOS DeviceSupport" | "macOS DeviceSupport" | "watchOS DeviceSupport" => {
             Some(Kind::DeviceSupport)
@@ -84,9 +81,8 @@ fn kind(scan: &Scan, i: u32) -> Option<Kind> {
         ".cache" | ".npm" | ".gradle" => Some(Kind::ToolCaches),
         "cache"
             if parent_name == "install"
-                && parent_node.is_some_and(|n| {
-                    n.parent != NO_PARENT && &*scan.nodes[n.parent as usize].name == ".bun"
-                }) =>
+                && t.parents[parent as usize] != NO_PARENT
+                && t.name(t.parents[parent as usize] as usize) == ".bun" =>
         {
             Some(Kind::BunCache)
         }
@@ -97,31 +93,30 @@ fn kind(scan: &Scan, i: u32) -> Option<Kind> {
 /// Existing panel semantics: visit descendants (not the scan root), skip
 /// `.Trash`, and never descend into a recognized folder, even below threshold.
 /// Size ties use paths so parallel scan scheduling cannot reorder the report.
-pub fn find(scan: &Scan, min_bytes: u64) -> Vec<Candidate> {
+pub fn find(t: &Tree, min_bytes: u64) -> Vec<Candidate> {
     let mut found = Vec::new();
-    if scan.nodes.is_empty() {
+    if t.is_empty() {
         return found;
     }
     let mut stack = vec![0];
     while let Some(i) = stack.pop() {
-        for child in scan.nodes[i].children.clone() {
-            let node = &scan.nodes[child as usize];
-            // Child ranges are unsorted; skip this subtree, not later siblings.
-            if node.alloc < min_bytes || !node.is_dir || &*node.name == ".Trash" {
+        for &child in t.kids(i) {
+            let c = child as usize;
+            // Skip this subtree, not later siblings (the final sort decides order).
+            if t.alloc[c] < min_bytes || !t.is_dir(c) || t.name(c) == ".Trash" {
                 continue;
             }
-            if let Some(kind) = kind(scan, child) {
+            if let Some(kind) = kind(t, child) {
                 found.push(Candidate { node: child, kind });
             } else {
-                stack.push(child as usize);
+                stack.push(c);
             }
         }
     }
     found.sort_by(|a, b| {
-        scan.nodes[b.node as usize]
-            .alloc
-            .cmp(&scan.nodes[a.node as usize].alloc)
-            .then_with(|| scan.path(a.node as usize).cmp(&scan.path(b.node as usize)))
+        t.alloc[b.node as usize]
+            .cmp(&t.alloc[a.node as usize])
+            .then_with(|| t.path(a.node as usize).cmp(&t.path(b.node as usize)))
     });
     found
 }
@@ -129,30 +124,26 @@ pub fn find(scan: &Scan, min_bytes: u64) -> Vec<Candidate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Node;
 
-    fn add(scan: &mut Scan, parent: u32, name: &str, is_dir: bool, bytes: u64) -> u32 {
-        let index = scan.nodes.len() as u32;
-        scan.nodes.push(Node {
-            name: name.into(),
-            parent,
-            is_dir,
-            alloc: bytes,
-            size: bytes,
-            complete: true,
-            n_files: 0,
-            children: 0..0,
-        });
-        if parent != NO_PARENT {
-            let children = &mut scan.nodes[parent as usize].children;
-            if children.start == children.end {
-                *children = index..index + 1;
-            } else {
-                assert_eq!(children.end, index);
-                children.end += 1;
-            }
+    /// Sizes are set per node as given (not aggregated). Siblings must be
+    /// added consecutively, as a scan appends them; `link` then lists them.
+    fn add(scan: &mut Tree, parent: u32, name: &str, is_dir: bool, bytes: u64) -> u32 {
+        if parent == NO_PARENT {
+            *scan = Tree::with_root(name);
+            scan.alloc[0] = bytes;
+            scan.logical[0] = bytes;
+            return 0;
         }
-        index
+        assert!(
+            scan.parents.last() == Some(&parent) || !scan.parents.contains(&parent),
+            "siblings are contiguous"
+        );
+        scan.push(name, parent, bytes, bytes, is_dir)
+    }
+
+    fn link(mut scan: Tree) -> Tree {
+        scan.link_children();
+        scan
     }
 
     #[test]
@@ -249,10 +240,7 @@ mod tests {
             ("Downloads", "home", "", "", "", None),
         ];
         for (name, parent, grandparent, sibling, child, expected) in cases {
-            let mut scan = Scan {
-                nodes: Vec::new(),
-                errors: 0,
-            };
+            let mut scan = Tree::default();
             add(&mut scan, NO_PARENT, "/root", true, 0);
             let gp = add(&mut scan, 0, grandparent, true, MIN_BYTES);
             let p = add(&mut scan, gp, parent, true, MIN_BYTES);
@@ -263,6 +251,7 @@ mod tests {
             if !child.is_empty() {
                 add(&mut scan, i, child, false, 0);
             }
+            let scan = link(scan);
             assert_eq!(kind(&scan, i), expected, "{grandparent}/{parent}/{name}");
             assert_eq!(
                 find(&scan, MIN_BYTES),
@@ -276,10 +265,7 @@ mod tests {
 
     #[test]
     fn preserves_panel_traversal_threshold_and_partial_candidates() {
-        let mut scan = Scan {
-            nodes: Vec::new(),
-            errors: 0,
-        };
+        let mut scan = Tree::default();
         add(
             &mut scan,
             NO_PARENT,
@@ -295,7 +281,8 @@ mod tests {
         add(&mut scan, matched, ".venv", true, MIN_BYTES);
         // Deliberately inconsistent size catches descent under a small match.
         add(&mut scan, small, ".venv", true, MIN_BYTES);
-        scan.nodes[matched as usize].complete = false;
+        let mut scan = link(scan);
+        scan.complete[matched as usize] = false;
         assert_eq!(
             find(&scan, MIN_BYTES),
             vec![Candidate {
@@ -308,16 +295,14 @@ mod tests {
     #[test]
     fn size_ties_are_lexical_independent_of_discovery_order() {
         for names in [["z", "a"], ["a", "z"]] {
-            let mut scan = Scan {
-                nodes: Vec::new(),
-                errors: 0,
-            };
+            let mut scan = Tree::default();
             add(&mut scan, NO_PARENT, "/root", true, 0);
             let first = add(&mut scan, 0, names[0], true, MIN_BYTES);
             let second = add(&mut scan, 0, names[1], true, MIN_BYTES);
             let large = add(&mut scan, 0, ".npm", true, MIN_BYTES * 2);
             let first_cache = add(&mut scan, first, ".cache", true, MIN_BYTES);
             let second_cache = add(&mut scan, second, ".cache", true, MIN_BYTES);
+            let scan = link(scan);
             let expected = if names[0] == "a" {
                 vec![large, first_cache, second_cache]
             } else {
