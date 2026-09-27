@@ -17,6 +17,8 @@ nonisolated final class Tree: @unchecked Sendable {
     let childArr: UnsafePointer<UInt32>
     let nameOff: UnsafePointer<UInt32>
     let nameBlob: UnsafePointer<UInt8>
+    let cleanupCount: Int
+    let cleanupNodes: UnsafePointer<UInt32>
     let errors: UInt64
 
     init?(handle: OpaquePointer) {
@@ -30,7 +32,8 @@ nonisolated final class Tree: @unchecked Sendable {
               let childOff = bz_child_off(handle),
               let childArr = bz_children(handle),
               let nameOff = bz_name_off(handle),
-              let nameBlob = bz_name_blob(handle)
+              let nameBlob = bz_name_blob(handle),
+              let cleanupNodes = bz_cleanup_nodes(handle)
         else { return nil }
         self.handle = handle
         self.count = Int(n)
@@ -43,12 +46,19 @@ nonisolated final class Tree: @unchecked Sendable {
         self.childArr = childArr
         self.nameOff = nameOff
         self.nameBlob = nameBlob
+        self.cleanupCount = Int(bz_cleanup_count(handle))
+        self.cleanupNodes = cleanupNodes
         self.errors = bz_errors(handle)
     }
 
     deinit { bz_free(handle) }
 
     func isDir(_ i: Int) -> Bool { flags[i] & 1 != 0 }
+
+    func cleanupDescription(_ index: Int) -> String {
+        guard let label = bz_cleanup_description(handle, UInt64(index)) else { return "" }
+        return String(cString: label)
+    }
 
     func name(_ i: Int) -> String {
         let start = Int(nameOff[i])

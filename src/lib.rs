@@ -4,6 +4,7 @@
 //! metadata (name, type, sizes) per syscall, so we never pay the classic
 //! readdir-then-stat-per-file cost that makes naive scanners slow on macOS.
 
+pub mod cleanup;
 pub mod ffi;
 pub mod searchfs;
 
@@ -93,6 +94,21 @@ pub struct Node {
 pub struct Scan {
     pub nodes: Vec<Node>,
     pub errors: u64,
+}
+
+impl Scan {
+    pub fn path(&self, mut i: usize) -> PathBuf {
+        let mut parts = Vec::new();
+        while i != 0 {
+            parts.push(&*self.nodes[i].name);
+            i = self.nodes[i].parent as usize;
+        }
+        let mut path = PathBuf::from(&*self.nodes[0].name);
+        for part in parts.into_iter().rev() {
+            path.push(part);
+        }
+        path
+    }
 }
 
 #[derive(Default)]
