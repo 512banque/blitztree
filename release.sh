@@ -45,15 +45,47 @@ else
 fi
 [[ -n "$NOTES_FILE" ]] && NOTES=$(<"$NOTES_FILE")
 
+# Sparkle appcast: installed apps read it from the latest release
+# (SUFeedURL in build.sh). The dmg is EdDSA-signed with the key from
+# `generate_keys --account blitztree` (backed up in ~/.config/blitztree-signing).
+SPARKLE_KEY="$HOME/.config/blitztree-signing/sparkle-ed25519.key"
+if [[ -f "$SPARKLE_KEY" ]]; then
+    ED=$(.cache/sparkle-*/bin/sign_update --ed-key-file "$SPARKLE_KEY" BlitzTree.dmg)
+else
+    ED=$(.cache/sparkle-*/bin/sign_update --account blitztree BlitzTree.dmg)
+fi
+MIN_OS=$(/usr/libexec/PlistBuddy -c "Print LSMinimumSystemVersion" build/BlitzTree.app/Contents/Info.plist)
+# The update window shows the notes above the install section, as HTML.
+CHANGES_HTML=$(gh api markdown -f text="${NOTES%%'### Install'*}")
+cat > appcast.xml <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<channel>
+<title>BlitzTree</title>
+<item>
+    <title>BlitzTree $V</title>
+    <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+    <sparkle:version>$V</sparkle:version>
+    <sparkle:shortVersionString>$V</sparkle:shortVersionString>
+    <sparkle:minimumSystemVersion>$MIN_OS.0</sparkle:minimumSystemVersion>
+    <sparkle:fullReleaseNotesLink>https://github.com/ahmedkhaleel2004/blitztree/releases/tag/v$V</sparkle:fullReleaseNotesLink>
+    <description><![CDATA[$CHANGES_HTML]]></description>
+    <enclosure url="https://github.com/ahmedkhaleel2004/blitztree/releases/download/v$V/BlitzTree.dmg" $ED type="application/octet-stream"/>
+</item>
+</channel>
+</rss>
+EOF
+xmllint --noout appcast.xml
+
 shasum -a 256 BlitzTree.dmg > SHA256SUMS.txt
 if gh release view "v$V" >/dev/null 2>&1; then
     # Re-running over an existing (e.g. draft) release replaces its files.
-    gh release upload "v$V" BlitzTree.dmg SHA256SUMS.txt --clobber
+    gh release upload "v$V" BlitzTree.dmg SHA256SUMS.txt appcast.xml --clobber
     gh release edit "v$V" --title "BlitzTree $V" --notes "$NOTES" --draft=false --latest
 else
-    gh release create "v$V" BlitzTree.dmg SHA256SUMS.txt \
+    gh release create "v$V" BlitzTree.dmg SHA256SUMS.txt appcast.xml \
         --title "BlitzTree $V" \
         --notes "$NOTES"
 fi
-rm -f SHA256SUMS.txt
+rm -f SHA256SUMS.txt appcast.xml
 echo "==> released v$V"
