@@ -24,9 +24,13 @@ final class SunburstNSView: NSView {
     }
 
     /// Folders an agent plan would remove: lit while the rest dims.
-    var highlights: [Int] = []
+    var highlights: [Int] = [] { didSet { if highlights != oldValue { litSegments = nil } } }
 
     private var segments: [SBSegment] = []
+    private var segmentPaths: [CGPath] = []
+    /// Layout visits each ring in angular order, despite interleaving rings.
+    private var segmentsByRing: [[Int]] = []
+    private var litSegments: [Int]?
     /// Ring edges in points: radii[0] is the centre disc, ring k spans
     /// radii[k]..<radii[k + 1].
     private var radii: [CGFloat] = []
@@ -74,7 +78,9 @@ final class SunburstNSView: NSView {
     func relayout() {
         hoveredSegment = nil
         guard let model, let tree = model.tree, bounds.width > 40, bounds.height > 40 else {
-            segments = []; bitmap = nil
+            segments = []; segmentPaths = []; segmentsByRing = []; radii = []
+            litSegments = nil; hoveringCenter = false; bitmap = nil
+            lastSize = .zero
             needsDisplay = true
             return
         }
@@ -90,6 +96,10 @@ final class SunburstNSView: NSView {
             tree: tree, root: model.viewRoot, radii: radii,
             freeBytes: model.showFreeSpace && model.viewRoot == 0 ? model.freeBytes : 0
         )
+        segmentPaths = segments.map { arcPath(ring: $0.ring, start: $0.start, end: $0.end) }
+        segmentsByRing = Array(repeating: [], count: radii.count - 1)
+        for i in segments.indices { segmentsByRing[segments[i].ring].append(i) }
+        litSegments = nil
         let laidOut = Date()
         bitmap = render()
         if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
@@ -218,6 +228,23 @@ final class SunburstNSView: NSView {
                 ? radii.count - 2 : s.ring)
     }
 
+    /// Immutable paths may be read by several independent raster contexts.
+    nonisolated private struct RasterScene: @unchecked Sendable {
+        let segments: [SBSegment]
+        let paths: [CGPath]
+        let rings: [CGPath]
+        let stroke: CGPath
+        let outline: CGPath?
+        let radii: [CGFloat]
+        let center: CGPoint
+        let bounds: CGRect
+    }
+
+    /// Each worker exclusively owns its context and disjoint bitmap rows.
+    nonisolated private struct RasterBand: @unchecked Sendable {
+        let context: CGContext
+    }
+
     private func render() -> CGImage? {
         let scale = window?.backingScaleFactor ?? 2
         let pw = max(1, Int((bounds.width * scale).rounded()))
@@ -227,15 +254,78 @@ final class SunburstNSView: NSView {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ) else { return nil }
+
+        let ringPaths = (0..<(radii.count - 1)).map { _ in CGMutablePath() }
+        let stroke = CGMutablePath()
+        for (i, s) in segments.enumerated() {
+            ringPaths[s.ring].addPath(segmentPaths[i])
+            stroke.addPath(segmentPaths[i])
+        }
+        // Expand Retina hairlines once with the original unclipped transform.
+        // At 1x Quartz aligns strokes differently from filled outlines, so keep
+        // its original serial stroke there and for small scenes.
+        var outline: CGPath?
+        if scale == 2, segments.count >= 24 {
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: CGFloat(ph))
+            ctx.scaleBy(x: scale, y: -scale)
+            ctx.setLineWidth(1)
+            ctx.setLineJoin(.round)
+            ctx.addPath(stroke)
+            ctx.replacePathWithStrokedPath()
+            outline = ctx.path
+            ctx.beginPath()
+            ctx.restoreGState()
+        }
+        let scene = RasterScene(segments: segments, paths: segmentPaths, rings: ringPaths,
+                                stroke: stroke, outline: outline, radii: radii, center: center, bounds: bounds)
+        // Quartz's gradient rounding changes with the clip bounds. Render
+        // those once in the original context, then split the costly stroke.
+        Self.paintBase(scene, in: ctx, scale: scale)
+        ctx.flush()
+        let count = outline == nil ? 1 : max(1, min(ProcessInfo.processInfo.activeProcessorCount, ph / 128))
+        guard count > 1, let pixels = ctx.data else {
+            Self.paintEdges(scene, in: ctx)
+            return ctx.makeImage()
+        }
+        var bands: [RasterBand] = []
+        for band in 0..<count {
+            let row = ph * band / count
+            let height = ph * (band + 1) / count - row
+            guard let context = CGContext(data: pixels,
+                                          width: pw, height: ph, bitsPerComponent: 8,
+                                          bytesPerRow: ctx.bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+                Self.paintEdges(scene, in: ctx)
+                return ctx.makeImage()
+            }
+            // Keep the original device coordinates for path rasterization;
+            // clip writes to disjoint rows.
+            context.clip(to: CGRect(x: 0, y: ph - row - height, width: pw, height: height))
+            context.translateBy(x: 0, y: CGFloat(ph))
+            context.scaleBy(x: scale, y: -scale)
+            bands.append(RasterBand(context: context))
+        }
+        let workers = bands
+        DispatchQueue.concurrentPerform(iterations: workers.count) { i in
+            let band = workers[i]
+            Self.paintEdges(scene, in: band.context)
+            band.context.flush()
+        }
+        return ctx.makeImage()
+    }
+
+    nonisolated private static func paintBase(_ scene: RasterScene, in ctx: CGContext, scale: CGFloat) {
+        let bounds = scene.bounds, center = scene.center, radii = scene.radii
         // Draw in view points, y down, like the view itself.
-        ctx.translateBy(x: 0, y: CGFloat(ph))
+        ctx.translateBy(x: 0, y: CGFloat(ctx.height))
         ctx.scaleBy(x: scale, y: -scale)
         let bg = Style.background
         ctx.setFillColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
         ctx.fill(bounds)
 
-        for s in segments {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+        for (i, s) in scene.segments.enumerated() {
+            ctx.addPath(scene.paths[i])
             ctx.setFillColor(CGColor(red: s.color.r, green: s.color.g, blue: s.color.b, alpha: 1))
             ctx.fillPath()
         }
@@ -245,12 +335,9 @@ final class SunburstNSView: NSView {
         if let shade = CGGradient(colorsSpace: space, colors: [
             CGColor(gray: 1, alpha: 1), CGColor(gray: 0.80, alpha: 1),
         ] as CFArray, locations: [0, 1]) {
-            var byRing = [CGMutablePath](repeating: CGMutablePath(), count: radii.count - 1)
-            for k in byRing.indices { byRing[k] = CGMutablePath() }
-            for s in segments { byRing[s.ring].addPath(arcPath(ring: s.ring, start: s.start, end: s.end)) }
             ctx.saveGState()
             ctx.setBlendMode(.multiply)
-            for (k, arcs) in byRing.enumerated() where !arcs.isEmpty {
+            for (k, arcs) in scene.rings.enumerated() where !arcs.isEmpty {
                 ctx.saveGState()
                 ctx.addPath(arcs)
                 ctx.clip()
@@ -260,22 +347,28 @@ final class SunburstNSView: NSView {
             }
             ctx.restoreGState()
         }
+    }
 
+    nonisolated private static func paintEdges(_ scene: RasterScene, in ctx: CGContext) {
+        let bg = Style.background, center = scene.center, radii = scene.radii
         // Hairline gaps between arcs, in the background colour.
-        ctx.setStrokeColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
-        ctx.setLineWidth(1)
-        ctx.setLineJoin(.round)
-        for s in segments {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+        if let outline = scene.outline {
+            ctx.setFillColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
+            ctx.addPath(outline)
+            ctx.fillPath()
+        } else {
+            ctx.setStrokeColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
+            ctx.setLineWidth(1)
+            ctx.setLineJoin(.round)
+            ctx.addPath(scene.stroke)
+            ctx.strokePath()
         }
-        ctx.strokePath()
 
         // Centre disc: the folder being shown.
         let r = radii[0] - 3
         let c = Style.centerFill
         ctx.setFillColor(CGColor(red: c, green: c, blue: c + 0.01, alpha: 1))
         ctx.fillEllipse(in: CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r))
-        return ctx.makeImage()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -291,18 +384,21 @@ final class SunburstNSView: NSView {
         guard let model, let tree = model.tree, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         if !highlights.isEmpty {
-            let wanted = Set(highlights)
-            let lit = segments.filter { wanted.contains($0.node) }
+            if litSegments == nil {
+                let wanted = Set(highlights)
+                litSegments = segments.indices.filter { wanted.contains(segments[$0].node) }
+            }
+            let lit = litSegments ?? []
             if !lit.isEmpty {
                 let dim = CGMutablePath()
                 dim.addRect(bounds)
-                for s in lit { dim.addPath(wedgePath(s)) }
+                for i in lit { dim.addPath(wedgePath(segments[i])) }
                 ctx.addPath(dim)
                 ctx.setFillColor(NSColor.black.withAlphaComponent(0.6).cgColor)
                 ctx.fillPath(using: .evenOdd)
                 ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
                 ctx.setLineWidth(1.5)
-                for s in lit { ctx.addPath(wedgePath(s)) }
+                for i in lit { ctx.addPath(wedgePath(segments[i])) }
                 ctx.strokePath()
             }
         }
@@ -312,14 +408,14 @@ final class SunburstNSView: NSView {
             ctx.addPath(wedgePath(s))
             ctx.setFillColor(NSColor.white.withAlphaComponent(0.16).cgColor)
             ctx.fillPath()
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+            ctx.addPath(segmentPaths[i])
             ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.9).cgColor)
             ctx.setLineWidth(1.5)
             ctx.strokePath()
         }
 
-        if let sel = model.selection, let s = segments.first(where: { $0.node == sel }) {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+        if let sel = model.selection, let i = segments.firstIndex(where: { $0.node == sel }) {
+            ctx.addPath(segmentPaths[i])
             ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
             ctx.setLineWidth(2)
             ctx.strokePath()
@@ -410,7 +506,14 @@ final class SunburstNSView: NSView {
         guard let ring = (0..<(radii.count - 1)).first(where: { r < radii[$0 + 1] }) else { return nil }
         var a = atan2(dy, dx) + .pi / 2
         if a < 0 { a += 2 * .pi }
-        return segments.firstIndex { $0.ring == ring && a >= $0.start && a < $0.end }.map { .segment($0) }
+        let indices = segmentsByRing[ring]
+        var lo = 0, hi = indices.count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if segments[indices[mid]].end <= a { lo = mid + 1 } else { hi = mid }
+        }
+        guard lo < indices.count, a >= segments[indices[lo]].start else { return nil }
+        return .segment(indices[lo])
     }
 
     override func keyDown(with event: NSEvent) {

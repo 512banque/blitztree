@@ -1,0 +1,15 @@
+ec8d676a6be6b4c21b03598c3e3d4db80f78934e3141e53cc52c3c2505279391  app/Agent.swift
+d17e15abda5a55ebd167d82de1ecbdd49e176d1b757d2104266bc9652ed91b03  app/Cleanup.swift
+PASS: incremental parser split parity; JSONL event/write parity (both agents); prompt byte equality; cancellation prevents launch; trash batch stays off-main, rejects duplicate starts, preserves failures, completes once
+partial_parser normal-12-items bytes=3983 deltas=244 baseline_ms=1.207666 optimized_ms=0.054917
+baseline_samples=[1.227417, 1.201167, 1.193375, 1.192042, 1.26825, 1.220375, 1.216625, 1.207666, 1.205125] optimized_samples=[0.058875, 0.054125, 0.052917, 0.05175, 0.091833, 0.057708, 0.054917, 0.05625, 0.054125]
+partial_parser 12-items-144-paths bytes=61773 deltas=2549 baseline_ms=169.604125 optimized_ms=0.350917
+baseline_samples=[166.906042, 166.539541, 168.185667, 169.107625, 169.604125, 171.292625, 171.890708, 171.396125, 170.33375] optimized_samples=[0.360042, 0.34125, 0.487417, 0.34925, 0.350917, 0.339709, 0.4025, 0.331708, 0.356834]
+jsonl 16k-read-batches bytes=310890 baseline_ms=14.511250 optimized_ms=13.278541
+baseline_samples=[14.09625, 14.430834, 14.380458, 15.2605, 14.519292, 14.51125, 14.441375, 15.770458, 14.709916] optimized_samples=[12.895958, 12.869875, 13.170792, 14.215583, 13.278541, 13.808834, 13.970167, 13.249791, 13.617]
+jsonl long-record-fragments bytes=512042 baseline_ms=688.318625 optimized_ms=2.148125
+baseline_samples=[688.318625, 723.423458, 661.950916, 712.843, 664.54725, 760.843, 671.010583, 668.497042, 708.64625] optimized_samples=[2.190083, 2.079166, 2.165417, 2.312417, 2.044583, 2.110583, 2.148125, 2.096875, 2.205209]
+prompt_candidates pruned-sort-vs-heap nodes=1008001 baseline_ms=0.026958 optimized_ms=0.213791
+baseline_samples=[0.029291, 0.026958, 0.027542, 0.026708, 0.029958, 0.0265, 0.026792, 0.026708, 0.027083] optimized_samples=[0.212209, 0.2105, 0.213791, 0.213542, 0.218667, 0.216625, 0.217875, 0.213667, 0.214333]
+prompt nodes=1008001 baseline_ms=2.386292 optimized_ms=1.306875
+baseline_samples=[2.627834, 2.386292, 2.511875, 2.372, 2.372125, 2.428625, 2.376417, 2.367458, 2.435875] optimized_samples=[1.425166, 1.306875, 1.28675, 1.284791, 1.458083, 1.317084, 1.276833, 1.358791, 1.266042]

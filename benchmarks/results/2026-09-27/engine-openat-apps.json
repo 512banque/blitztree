@@ -1,0 +1,197 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "cpus": 10,
+  "path": "/Applications",
+  "mode": "ffi",
+  "threads": null,
+  "binary_sha256": {
+    "baseline": "a3d8e2724c2a0debf8758574181db359f080a496f2657149968385c870b9b926",
+    "candidate": "cb31f27f83965ec8d829dc469ce20409ebd41d1767849a0cc81bd9d923ea6496"
+  },
+  "summary": {
+    "baseline": {
+      "median_seconds": 0.580262125,
+      "min_seconds": 0.548175125,
+      "max_seconds": 0.607314541,
+      "median_peak_footprint_bytes": 59326896
+    },
+    "candidate": {
+      "median_seconds": 0.583659458,
+      "min_seconds": 0.552790042,
+      "max_seconds": 0.622358375,
+      "median_peak_footprint_bytes": 59670960
+    },
+    "speedup": 0.9941792547804477,
+    "all_totals_identical": true
+  },
+  "measurements": [
+    {
+      "pair": 1,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.580262125,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 59686912,
+      "peak_footprint_bytes": 58917296
+    },
+    {
+      "pair": 1,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.583659458,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 60014592,
+      "peak_footprint_bytes": 59261360
+    },
+    {
+      "pair": 2,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.595490458,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 61177856,
+      "peak_footprint_bytes": 60424624
+    },
+    {
+      "pair": 2,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.593537083,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 61390848,
+      "peak_footprint_bytes": 60621232
+    },
+    {
+      "pair": 3,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.58556,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 60424192,
+      "peak_footprint_bytes": 59654576
+    },
+    {
+      "pair": 3,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.5677665,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 61440000,
+      "peak_footprint_bytes": 60686768
+    },
+    {
+      "pair": 4,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.552790042,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 58294272,
+      "peak_footprint_bytes": 57541040
+    },
+    {
+      "pair": 4,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.578245083,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 61652992,
+      "peak_footprint_bytes": 60883376
+    },
+    {
+      "pair": 5,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.580215542,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 60096512,
+      "peak_footprint_bytes": 59326896
+    },
+    {
+      "pair": 5,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.600989084,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 60424192,
+      "peak_footprint_bytes": 59670960
+    },
+    {
+      "pair": 6,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.622358375,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 61325312,
+      "peak_footprint_bytes": 60572080
+    },
+    {
+      "pair": 6,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.607314541,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 60047360,
+      "peak_footprint_bytes": 59277744
+    },
+    {
+      "pair": 7,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.548175125,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 59555840,
+      "peak_footprint_bytes": 58786224
+    },
+    {
+      "pair": 7,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.560833416,
+      "files": 278661,
+      "dirs": 53357,
+      "bytes": 32533331968,
+      "errors": 0,
+      "max_rss_bytes": 59621376,
+      "peak_footprint_bytes": 58868144
+    }
+  ]
+}

@@ -17,14 +17,63 @@ nonisolated struct TMLabel {
     var name: String
 }
 
+/// Disjoint leaves occupy only a few nearby cells. Keep their original draw
+/// order within each cell so the last matching leaf still wins at boundaries.
+nonisolated struct TMLeafIndex {
+    private static let cellSize: CGFloat = 32
+    private var columns = 0
+    private var rows = 0
+    private var cells: [[Int]] = []
+
+    init() {}
+
+    init(leaves: [TMRect], size: CGSize) {
+        guard !leaves.isEmpty, size.width > 0, size.height > 0 else { return }
+        columns = max(1, Int(ceil(size.width / Self.cellSize)))
+        rows = max(1, Int(ceil(size.height / Self.cellSize)))
+        cells = Array(repeating: [], count: columns * rows)
+        for (i, leaf) in leaves.enumerated() {
+            let x0 = column(leaf.rect.minX), x1 = column(leaf.rect.maxX)
+            let y0 = row(leaf.rect.minY), y1 = row(leaf.rect.maxY)
+            for y in y0...y1 {
+                for x in x0...x1 { cells[y * columns + x].append(i) }
+            }
+        }
+    }
+
+    private func column(_ x: CGFloat) -> Int {
+        Int(min(CGFloat(columns - 1), max(0, floor(x / Self.cellSize))))
+    }
+
+    private func row(_ y: CGFloat) -> Int {
+        Int(min(CGFloat(rows - 1), max(0, floor(y / Self.cellSize))))
+    }
+
+    func hit(_ point: CGPoint, leaves: [TMRect]) -> TMRect? {
+        guard !cells.isEmpty, point.x.isFinite, point.y.isFinite else { return nil }
+        for i in cells[row(point.y) * columns + column(point.x)].reversed() {
+            if leaves[i].rect.contains(point) { return leaves[i] }
+        }
+        return nil
+    }
+}
+
 /// Squarified treemap layout (Bruls, Huizing, van Wijk) over the flat tree.
 nonisolated enum Squarify {
+    struct Layout {
+        var tiles: [(node: Int, rect: CGRect)] = []
+        /// Every rounded pixel in the input rect is painted by a tile that
+        /// survives the renderer's half-pixel cutoff. Allows opaque children
+        /// to replace their parent's cushion without changing its pixels.
+        var coversBounds = false
+    }
+
     /// Lay out the direct children of `dir` into `rect` (one level, no
-    /// recursion). Children below ~half a pixel are dropped — the caller has
-    /// already painted the parent underneath, so nothing shows as a void.
-    static func layoutLevel(tree: Tree, dir: Int, rect: CGRect) -> [(node: Int, rect: CGRect)] {
+    /// recursion). Children below ~half a pixel are dropped; coversBounds
+    /// tells the caller whether it must paint the parent underneath.
+    static func layoutLevel(tree: Tree, dir: Int, rect: CGRect) -> Layout {
         let kids = tree.children(dir)
-        if kids.isEmpty { return [] }
+        if kids.isEmpty { return Layout() }
 
         var items: [(node: Int, size: Double)] = []
         items.reserveCapacity(kids.count)
@@ -37,10 +86,10 @@ nonisolated enum Squarify {
 
     /// Core squarify over explicit (node, size) items, already sorted
     /// descending. Synthetic nodes (negative ids) welcome.
-    static func layoutItems(_ items: [(node: Int, size: Double)], rect: CGRect) -> [(node: Int, rect: CGRect)] {
-        guard !items.isEmpty else { return [] }
+    static func layoutItems(_ items: [(node: Int, size: Double)], rect: CGRect) -> Layout {
+        guard !items.isEmpty else { return Layout() }
         let total = items.reduce(0.0) { $0 + $1.size }
-        guard total > 0 else { return [] }
+        guard total > 0 else { return Layout() }
         let scale = Double(rect.width * rect.height) / total
 
         var out: [(node: Int, rect: CGRect)] = []
@@ -49,6 +98,7 @@ nonisolated enum Squarify {
         var x = rect.minX, y = rect.minY
         var w = rect.width, h = rect.height
         var i = 0
+        var covered = true
 
         while i < items.count {
             let side = Double(min(w, h))
@@ -76,6 +126,7 @@ nonisolated enum Squarify {
 
             let thickness = CGFloat(rowSum) / min(w, h)
             var offset: CGFloat = 0
+            var pixelEnd = (w < h ? x : y).rounded()
             for j in i..<rowEnd {
                 let len = CGFloat(items[j].size * scale) / thickness
                 let r: CGRect
@@ -84,9 +135,15 @@ nonisolated enum Squarify {
                 } else {
                     r = CGRect(x: x, y: y + offset, width: thickness, height: len)
                 }
+                // Check the actual rounded edges, rather than relying on
+                // floating-point area sums to establish pixel coverage.
+                let pixelStart = (w < h ? r.minX : r.minY).rounded()
+                covered = covered && pixelStart == pixelEnd && r.width >= 0.5 && r.height >= 0.5
+                pixelEnd = (w < h ? r.maxX : r.maxY).rounded()
                 offset += len
                 out.append((items[j].node, r))
             }
+            covered = covered && pixelEnd == (w < h ? rect.maxX : rect.maxY).rounded()
             if w < h {
                 y += thickness; h -= thickness
             } else {
@@ -95,7 +152,8 @@ nonisolated enum Squarify {
             i = rowEnd
             if w < 0.5 || h < 0.5 { break }
         }
-        return out
+        covered = covered && (x.rounded() >= rect.maxX.rounded() || y.rounded() >= rect.maxY.rounded())
+        return Layout(tiles: out, coversBounds: covered)
     }
 
     private static func worstRatio(sum: Double, minA: Double, maxA: Double, side: Double) -> Double {

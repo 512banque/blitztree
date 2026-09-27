@@ -1,0 +1,12 @@
+Baseline Time Profiler: running CPU samples, not wall-clock time.
+Total sampled CPU weight: 818 ms
+440 ms (53.8%) getattrlistbulk
+306 ms (37.4%) __open
+21 ms (2.6%) madvise
+8 ms (1.0%) close
+7 ms (0.9%) mach_absolute_time
+6 ms (0.7%) swtch_pri
+5 ms (0.6%) _xzm_free_main
+4 ms (0.5%) _xzm_xzone_malloc_tiny
+3 ms (0.4%) _malloc_zone_malloc
+1 ms (0.1%) 0x104ccdfd9

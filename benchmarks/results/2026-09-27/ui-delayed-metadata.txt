@@ -1,0 +1,11 @@
+2026-09-27 02:17:41.002 ui-handoff-rows[85954:228283] BZ trial 0 begin
+[bz] scan 0.00s  flatten 0.00s
+2026-09-27 02:17:42.529 ui-handoff-rows[85954:228283] BZ done at 812182661.023, longest gap between polls 0.0 ms
+2026-09-27 02:17:42.529 ui-handoff-rows[85954:228283] BZ scan done: 1 nodes, 0 unreadable dirs
+2026-09-27 02:17:42.529 ui-handoff-rows[85954:228283] BZ poll synchronous completion: 1506.425 ms
+2026-09-27 02:17:42.534 ui-handoff-rows[85954:228283] BZ list reload: 0.1 ms
+2026-09-27 02:17:42.539 ui-handoff-rows[85954:228283] BZ hand-off: main thread free 1516.9 ms after done
+2026-09-27 02:17:42.549 ui-handoff-rows[85954:228283] BZ render 1698x1704: 1 steps, layout 0.2 ms, paint 0.2 ms (30 bands)
+2026-09-27 02:17:42.556 ui-handoff-rows[85954:228283] BZ trial 0 visible nodes=1
+2026-09-27 02:17:42.557 ui-handoff-rows[85954:228283] BZ delayed metadata: 140 responsive main-actor ticks
+2026-09-27 02:17:43.334 ui-handoff-rows[85954:228283] BZ trial 0 root body evaluations=2

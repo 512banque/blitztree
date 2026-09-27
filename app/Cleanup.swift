@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Observation
 
 /// A folder that is safe to delete because a tool rebuilds or re-downloads
 /// it on demand: package installs, build output, caches.
@@ -25,16 +26,20 @@ nonisolated enum Cleanup {
         while let i = stack.popLast() {
             for c in tree.children(i) {
                 let child = Int(c)
+                // Sizes include descendants, and the engine orders siblings
+                // largest first. Once below the threshold, neither this
+                // subtree nor any remaining sibling can contain a match.
+                guard tree.alloc[child] >= minBytes else { break }
+                guard tree.isDir(child) else { continue }
+                let name = tree.name(child)
                 // Already-trashed things aren't worth offering again.
-                guard tree.isDir(child), tree.name(child) != ".Trash" else { continue }
-                if let kind = kind(of: child, in: tree) {
-                    if tree.alloc[child] >= minBytes {
-                        let path = tree.path(child)
-                        var display = tree.displayPath(child)
-                        if display.hasPrefix(home) { display = "~" + display.dropFirst(home.count) }
-                        found.append(CleanupItem(node: child, path: path, display: display,
-                                                 kind: kind, bytes: tree.alloc[child]))
-                    }
+                guard name != ".Trash" else { continue }
+                if let kind = kind(of: child, name: name, in: tree) {
+                    let path = tree.path(child)
+                    var display = tree.displayPath(child)
+                    if display.hasPrefix(home) { display = "~" + display.dropFirst(home.count) }
+                    found.append(CleanupItem(node: child, path: path, display: display,
+                                             kind: kind, bytes: tree.alloc[child]))
                 } else {
                     stack.append(child)
                 }
@@ -43,10 +48,11 @@ nonisolated enum Cleanup {
         return found.sorted { $0.bytes > $1.bytes }
     }
 
-    private static func kind(of i: Int, in tree: Tree) -> String? {
-        let name = tree.name(i)
+    private static func kind(of i: Int, name: String, in tree: Tree) -> String? {
         let parent = Int(tree.parents[i])
-        let parentName = parent == Int(UInt32.max) ? "" : tree.name(parent)
+        // Most directory names do not match. Only decode the parent for the
+        // few rules whose meaning depends on it.
+        func parentName() -> String { parent == Int(UInt32.max) ? "" : tree.name(parent) }
         switch name {
         case "node_modules":
             return "npm packages, reinstallable"
@@ -58,15 +64,15 @@ nonisolated enum Cleanup {
             return "Rust build output"
         case ".next" where contains(parent, "package.json", in: tree):
             return "Next.js build output"
-        case "DerivedData" where parentName == "Xcode":
+        case "DerivedData" where parentName() == "Xcode":
             return "Xcode build data"
         case "iOS DeviceSupport", "macOS DeviceSupport", "watchOS DeviceSupport":
             return "Device symbols, re-downloaded when needed"
-        case "Caches" where parentName == "Library" || parentName == "CoreSimulator":
+        case "Caches" where parentName() == "Library" || parentName() == "CoreSimulator":
             return "App caches, rebuilt automatically"
         case ".cache", ".npm", ".gradle":
             return "Caches, rebuilt or re-downloaded when needed"
-        case "cache" where parentName == "install" && grandparentName(of: parent, in: tree) == ".bun":
+        case "cache" where parentName() == "install" && grandparentName(of: parent, in: tree) == ".bun":
             return "Bun package cache, re-downloaded when needed"
         default:
             return nil
@@ -86,13 +92,46 @@ nonisolated enum Cleanup {
     }
 }
 
+/// A manual cleanup batch keeps file coordination off the main actor and
+/// prevents repeated clicks from moving the same captured selection twice.
+@Observable
+@MainActor
+final class CleanupTrashBatch {
+    private(set) var running = false
+    /// Keep errors when the inspector closes during a background batch.
+    private(set) var failures: [String] = []
+
+    func clearFailures() { failures = [] }
+
+    @discardableResult
+    func start(_ items: [CleanupItem], completion: @escaping ([String]) -> Void) -> Task<Void, Never>? {
+        guard !running else { return nil }
+        running = true
+        return Task {
+            let failed = await Task.detached(priority: .userInitiated) {
+                var failed: [String] = []
+                for item in items {
+                    do {
+                        try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
+                    } catch {
+                        failed.append("\(item.display): \(error.localizedDescription)")
+                    }
+                }
+                return failed
+            }.value
+            failures.append(contentsOf: failed)
+            running = false
+            completion(failed)
+        }
+    }
+}
+
 /// Right-hand inspector: what can be reclaimed, pick, trash, rescan. While an
 /// agent cleanup is on screen, the whole panel is that run.
 struct CleanupPanel: View {
     let model: ScanModel
     @State private var picked: Set<Int> = []
     @State private var confirming = false
-    @State private var failures: [String] = []
 
     private var agent: InstalledAgent? { model.preferredAgent }
 
@@ -119,10 +158,10 @@ struct CleanupPanel: View {
         } message: {
             Text("You can put them back from the Trash until you empty it. The tools that made them rebuild them when needed.")
         }
-        .alert("Some folders couldn't be moved", isPresented: .constant(!failures.isEmpty)) {
-            Button("OK") { failures = [] }
+        .alert("Some folders couldn't be moved", isPresented: .constant(!model.cleanupTrash.failures.isEmpty)) {
+            Button("OK") { model.cleanupTrash.clearFailures() }
         } message: {
-            Text(failures.joined(separator: "\n"))
+            Text(model.cleanupTrash.failures.joined(separator: "\n"))
         }
     }
 
@@ -169,10 +208,12 @@ struct CleanupPanel: View {
                 }
             }
             .listStyle(.inset)
+            .disabled(model.cleanupTrash.running)
 
             Divider()
             VStack(spacing: 8) {
                 agentButton
+                    .disabled(model.cleanupTrash.running)
                 Button {
                     confirming = true
                 } label: {
@@ -182,7 +223,7 @@ struct CleanupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(picked.isEmpty || model.scanning)
+                .disabled(picked.isEmpty || model.scanning || model.cleanupTrash.running)
             }
             .padding(12)
         }
@@ -264,19 +305,13 @@ struct CleanupPanel: View {
     }
 
     private func trashPicked() {
-        var failed: [String] = []
-        for item in pickedItems {
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
-            } catch {
-                failed.append("\(item.display): \(error.localizedDescription)")
-            }
+        model.cleanupTrash.start(pickedItems) { _ in
+            picked = []
+            // The batch clears its busy state before this final rescan.
+            model.startScan()
         }
-        picked = []
-        failures = failed
-        // Rescan so every size on screen matches the disk again.
-        model.startScan()
     }
+
 }
 
 // MARK: - Agent run

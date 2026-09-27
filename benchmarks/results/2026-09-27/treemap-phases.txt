@@ -1,0 +1,15 @@
+phase,treemap,layout,9.347833,index,1.640542,paint,6.825416
+phase,treemap,layout,5.757792,index,1.486417,paint,6.810583
+phase,treemap,layout,5.62325,index,1.481709,paint,5.2
+phase,treemap,layout,5.254125,index,1.442875,paint,5.425
+phase,treemap,layout,5.111417,index,1.381208,paint,6.11925
+phase,treemap,layout,5.091292,index,1.417458,paint,5.934791
+phase,treemap,layout,5.361959,index,1.421042,paint,6.079208
+phase,treemap,layout,5.622291,index,1.473167,paint,5.481208
+phase,treemap,layout,5.089667,index,1.4815,paint,5.674875
+phase,treemap,layout,5.495792,index,1.511541,paint,5.71375
+phase,treemap,layout,5.946958,index,1.421167,paint,6.248708
+phase,treemap,layout,5.505459,index,1.43025,paint,6.912917
+phase,treemap,layout,5.215333,index,1.382166,paint,5.433708
+phase,treemap,layout,5.461166,index,1.377333,paint,7.3395
+phase,treemap,layout,5.492917,index,1.387459,paint,5.823667

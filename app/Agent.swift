@@ -249,37 +249,63 @@ nonisolated let planSchema = """
 /// Pulls finished item objects out of the plan JSON while it is still being
 /// written, so cards appear one by one instead of all at the end.
 nonisolated struct PartialPlanParser {
-    private(set) var text = ""
-    private var emitted = 0
+    private(set) var hasInput = false
+    private static let itemsKey = Array("\"items\"".utf8)
+    private var keyBytes = 0
+    private var foundKey = false
+    private var inItems = false
+    private var finished = false
+    private var depth = 0
+    private var inString = false
+    private var escaped = false
+    private var object: [UInt8] = []
 
     mutating func append(_ chunk: String) -> [PlanItemSpec] {
-        text += chunk
-        guard let itemsKey = text.range(of: "\"items\"") else { return [] }
-        let chars = Array(text[itemsKey.upperBound...].utf8)
-        var i = 0
-        while i < chars.count, chars[i] != UInt8(ascii: "[") { i += 1 }
-        var depth = 0, inString = false, escaped = false, start = -1
-        var objects: [[UInt8]] = []
-        while i < chars.count {
-            let c = chars[i]
+        hasInput = hasInput || !chunk.isEmpty
+        guard !finished else { return [] }
+        var fresh: [PlanItemSpec] = []
+        // Only inspect the new bytes. State survives arbitrary delta
+        // boundaries, including a key, escape, or unfinished item.
+        for c in chunk.utf8 {
+            if !foundKey {
+                if c == Self.itemsKey[keyBytes] {
+                    keyBytes += 1
+                    if keyBytes == Self.itemsKey.count { foundKey = true }
+                } else {
+                    keyBytes = c == Self.itemsKey[0] ? 1 : 0
+                }
+                continue
+            }
+            if !inItems {
+                if c == UInt8(ascii: "[") { inItems = true }
+                continue
+            }
+            if depth > 0 { object.append(c) }
             if inString {
-                if escaped { escaped = false } else if c == UInt8(ascii: "\\") { escaped = true } else if c == UInt8(ascii: "\"") { inString = false }
+                if escaped { escaped = false }
+                else if c == UInt8(ascii: "\\") { escaped = true }
+                else if c == UInt8(ascii: "\"") { inString = false }
             } else if c == UInt8(ascii: "\"") {
                 inString = true
             } else if c == UInt8(ascii: "{") {
-                if depth == 0 { start = i }
+                if depth == 0 {
+                    object.removeAll(keepingCapacity: true)
+                    object.append(c)
+                }
                 depth += 1
             } else if c == UInt8(ascii: "}") {
                 depth -= 1
-                if depth == 0, start >= 0 { objects.append(Array(chars[start...i])) }
+                if depth == 0, !object.isEmpty {
+                    if let item = try? JSONDecoder().decode(PlanItemSpec.self, from: Data(object)) {
+                        fresh.append(item)
+                    }
+                    object.removeAll(keepingCapacity: true)
+                }
             } else if c == UInt8(ascii: "]"), depth == 0 {
+                finished = true
                 break
             }
-            i += 1
         }
-        guard objects.count > emitted else { return [] }
-        let fresh = objects[emitted...].compactMap { try? JSONDecoder().decode(PlanItemSpec.self, from: Data($0)) }
-        emitted = objects.count
         return fresh
     }
 }
@@ -520,6 +546,7 @@ final class AgentRun {
     private let scanRoot: String
     private let tree: Tree
     private let onFinish: () -> Void
+    private var preparationTask: Task<Void, Never>?
 
     init(agent: InstalledAgent, env: AgentEnvironment, tree: Tree, scanRoot: String,
          known: [CleanupItem], onFinish: @escaping () -> Void) {
@@ -530,10 +557,15 @@ final class AgentRun {
         let running = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular }
             .compactMap { app in app.localizedName.map { "\($0) (\(app.bundleIdentifier ?? "?"))" } }
-        Task {
+        preparationTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
             let input = await Task.detached(priority: .userInitiated) {
                 AgentPrompt.build(tree: tree, scanRoot: scanRoot, known: known, running: running)
             }.value
+            // Closing or replacing a run while its prompt was being built
+            // must not launch an agent after cancellation.
+            guard !Task.isCancelled, let self else { return }
+            preparationTask = nil
             step("Asking \(agent.kind.name) what can go")
             start(input: input, env: env)
         }
@@ -574,6 +606,8 @@ final class AgentRun {
     }
 
     func cancel() {
+        preparationTask?.cancel()
+        preparationTask = nil
         process?.terminate()
         process = nil
     }
@@ -919,6 +953,8 @@ nonisolated final class AgentStreamReader: @unchecked Sendable {
     private let emit: @Sendable (Event) -> Void
     private let lock = NSLock()
     private var pending = Data()
+    /// Bytes already checked for a newline in the unfinished final record.
+    private var searchedBytes = 0
     private var parser = PartialPlanParser()
     private var inPlan = false
 
@@ -947,12 +983,19 @@ nonisolated final class AgentStreamReader: @unchecked Sendable {
     func feed(_ data: Data) {
         lock.lock(); defer { lock.unlock() }
         pending.append(data)
-        while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
-            let line = pending[pending.startIndex..<nl]
-            pending.removeSubrange(pending.startIndex...nl)
+        var lineStart = pending.startIndex
+        var searchStart = pending.index(lineStart, offsetBy: searchedBytes)
+        while let nl = pending[searchStart...].firstIndex(of: UInt8(ascii: "\n")) {
+            let line = pending[lineStart..<nl]
+            lineStart = pending.index(after: nl)
+            searchStart = lineStart
             guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
             kind == .claude ? claude(obj) : codex(obj)
         }
+        // Consume a batch once, after its line slices are gone. Removing the
+        // prefix per record copied the remaining Data for every line.
+        pending.removeSubrange(pending.startIndex..<lineStart)
+        searchedBytes = pending.count
     }
 
     private func claude(_ e: [String: Any]) {
@@ -964,7 +1007,7 @@ nonisolated final class AgentStreamReader: @unchecked Sendable {
                 if block["type"] as? String == "tool_use" {
                     inPlan = block["name"] as? String == "StructuredOutput"
                     if inPlan {
-                        if !parser.text.isEmpty { emit(.restart) }
+                        if parser.hasInput { emit(.restart) }
                         parser = PartialPlanParser()
                         emit(.activity("Writing the plan"))
                     }
@@ -1031,7 +1074,7 @@ nonisolated final class AgentStreamReader: @unchecked Sendable {
             parser = PartialPlanParser()
         case ("item/agentMessage/delta", _):
             if let delta = params["delta"] as? String {
-                if !inPlan, delta.contains("{") || !parser.text.isEmpty {
+                if !inPlan, delta.contains("{") || parser.hasInput {
                     inPlan = true
                     emit(.activity("Writing the plan"))
                 }
@@ -1090,26 +1133,43 @@ nonisolated final class AgentStreamReader: @unchecked Sendable {
 // MARK: - What the agent is told
 
 nonisolated enum AgentPrompt {
+    /// The flat tree orders siblings by size and includes descendants in
+    /// each directory's total. Small subtrees cannot contribute a row.
+    static func largestNodes(in tree: Tree) -> (folders: [Int], files: [Int]) {
+        var folders: [Int] = []
+        var files: [Int] = []
+        var stack = [0]
+        while let parent = stack.popLast() {
+            for raw in tree.children(parent) {
+                let i = Int(raw), size = tree.alloc[i]
+                guard size >= 100_000_000 else { break }
+                if tree.isDir(i) {
+                    stack.append(i)
+                    // Still descend through pass-through folders: only their
+                    // redundant table row is omitted.
+                    if let first = tree.children(i).first, tree.isDir(Int(first)),
+                       Double(tree.alloc[Int(first)]) >= 0.95 * Double(size) { continue }
+                    folders.append(i)
+                } else if size >= 250_000_000 {
+                    files.append(i)
+                }
+            }
+        }
+        // The original scan-order sort was stable. Preserve its node-ID
+        // order for ties even though traversal now follows the hierarchy.
+        func larger(_ a: Int, _ b: Int) -> Bool {
+            tree.alloc[a] == tree.alloc[b] ? a < b : tree.alloc[a] > tree.alloc[b]
+        }
+        folders.sort(by: larger)
+        files.sort(by: larger)
+        return (Array(folders.prefix(250)), Array(files.prefix(80)))
+    }
+
     static func build(tree: Tree, scanRoot: String, known: [CleanupItem], running: [String]) -> String {
         let home = NSHomeDirectory()
         func shown(_ i: Int) -> String { tree.displayPath(i) }
 
-        var folders: [Int] = []
-        var files: [Int] = []
-        for i in 1..<tree.count {
-            let size = tree.alloc[i]
-            if tree.isDir(i) {
-                guard size >= 100_000_000 else { continue }
-                // Skip pass-through folders the next line would repeat.
-                if let first = tree.children(i).first, tree.isDir(Int(first)),
-                   Double(tree.alloc[Int(first)]) >= 0.95 * Double(size) { continue }
-                folders.append(i)
-            } else if size >= 250_000_000 {
-                files.append(i)
-            }
-        }
-        folders.sort { tree.alloc[$0] > tree.alloc[$1] }
-        files.sort { tree.alloc[$0] > tree.alloc[$1] }
+        let (folders, files) = largestNodes(in: tree)
 
         var md = """
         You are the cleanup agent inside BlitzTree, a macOS disk-space app. The user clicked \

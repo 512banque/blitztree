@@ -12,11 +12,13 @@ struct ContentView: View {
         VStack(spacing: 0) {
             ZStack {
                 Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1))
-                // Once built, the list and treemap stay alive (hidden) through
+                // Build the empty canvases while the first scan is running,
+                // so AppKit setup does not delay the finished tree. Once built,
+                // the list and treemap stay alive (hidden) through
                 // a rescan: tearing them down and rebuilding them made AppKit
                 // redo its first-time setup and froze the window as the new
                 // scan landed. A new tree only reloads into the same views.
-                if model.tree != nil || model.hasShownTree {
+                if model.scanning || model.tree != nil || model.hasShownTree {
                     // Not HSplitView: next to the Clean Up inspector it put AppKit
                     // in an endless constraint-update loop and crashed the app
                     // seconds after every scan with the panel open.
@@ -40,7 +42,7 @@ struct ContentView: View {
                 if model.tree == nil {
                     Group {
                         if model.scanning {
-                            scanningOverlay
+                            ScanProgress(model: model)
                         } else if needsFDA {
                             fdaOverlay
                         } else {
@@ -53,7 +55,7 @@ struct ContentView: View {
                 }
             }
             Divider()
-            statusBar
+            ScanStatusBar(model: model)
         }
         .frame(minWidth: 760, minHeight: 500)
         .inspector(isPresented: $showCleanup) {
@@ -144,7 +146,7 @@ struct ContentView: View {
             } label: {
                 Label("Scan", systemImage: "folder")
             }
-            .disabled(model.scanning)
+            .disabled(model.scanning || model.cleanupTrash.running)
             .help("Choose what to scan")
 
             Button {
@@ -152,7 +154,7 @@ struct ContentView: View {
             } label: {
                 Label("Rescan", systemImage: "arrow.clockwise")
             }
-            .disabled(model.scanning)
+            .disabled(model.scanning || model.cleanupTrash.running)
             .help("Rescan")
         }
 
@@ -221,7 +223,33 @@ struct ContentView: View {
 
     // MARK: overlays
 
-    private var scanningOverlay: some View {
+    private var idleOverlay: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "internaldrive")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+            Text("Pick a target and scan")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            model.startScan(path: url.path)
+        }
+    }
+
+    private func openFDASettings() { openFullDiskAccessSettings() }
+}
+
+/// Observe 60 Hz counters here so progress updates do not rebuild the toolbar.
+private struct ScanProgress: View {
+    let model: ScanModel
+    var body: some View {
         VStack(spacing: 14) {
             Text(Fmt.size(model.bytes))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
@@ -236,22 +264,14 @@ struct ContentView: View {
         // (laying out the hidden list) just as each scan started.
         // No numeric-text transition: its blur is rasterized on the CPU and
         // stalled the main thread for most of a short scan. Plain digits
-        // updated at the 30 Hz poll count up smoothly on their own.
+        // updated at the 60 Hz poll count up smoothly on their own.
     }
+}
 
-    private var idleOverlay: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "internaldrive")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
-            Text("Pick a target and scan")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: status bar
-
-    private var statusBar: some View {
+/// Pointer movement changes only the status text, not the window's view graph.
+private struct ScanStatusBar: View {
+    let model: ScanModel
+    var body: some View {
         HStack(spacing: 8) {
             if let tree = model.tree {
                 if let sel = model.hovered ?? model.selection {
@@ -277,7 +297,7 @@ struct ContentView: View {
                                 .foregroundStyle(.tertiary)
                         } else {
                             Button {
-                                openFDASettings()
+                                openFullDiskAccessSettings()
                             } label: {
                                 Label("\(tree.errors) folders skipped — grant Full Disk Access", systemImage: "lock.shield")
                                     .font(.caption)
@@ -298,21 +318,11 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
+}
 
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            model.startScan(path: url.path)
-        }
-    }
-
-    private func openFDASettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-            NSWorkspace.shared.open(url)
-        }
+private func openFullDiskAccessSettings() {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+        NSWorkspace.shared.open(url)
     }
 }
 
@@ -405,8 +415,8 @@ struct OutlinePanel: NSViewRepresentable {
     let model: ScanModel
 
     final class Item {
-        let id: Int
-        let tree: Tree
+        private(set) var id: Int
+        private(set) var tree: Tree
         private var kids: [Item]?
         init(id: Int, tree: Tree) {
             self.id = id
@@ -415,6 +425,20 @@ struct OutlinePanel: NSViewRepresentable {
         var children: [Item] {
             if kids == nil { kids = tree.children(id).map { Item(id: Int($0), tree: tree) } }
             return kids!
+        }
+
+        /// Only an untouched, collapsed item can be rebound without leaving
+        /// stale child identities in AppKit's outline cache.
+        func canRebind(to id: Int, in tree: Tree) -> Bool {
+            kids == nil && self.tree.isDir(self.id) == tree.isDir(id)
+                && self.tree.children(self.id).count == tree.children(id).count
+                && self.tree.name(self.id) == tree.name(id)
+        }
+
+        func rebind(to id: Int, in tree: Tree) {
+            precondition(kids == nil)
+            self.id = id
+            self.tree = tree
         }
     }
 
@@ -430,11 +454,34 @@ struct OutlinePanel: NSViewRepresentable {
         func rebuildIfNeeded() {
             guard let model, let t = model.tree else { return }
             if t !== tree || model.viewRoot != viewRoot {
+                let childIDs = t.children(model.viewRoot)
+                // Bound name comparisons for extremely wide directories.
+                let reuseRows = t !== tree && model.viewRoot == viewRoot
+                    && roots.count <= 4_096
+                    && outline?.numberOfRows == roots.count && childIDs.count == roots.count
+                    && zip(roots, childIDs).allSatisfy { item, id in
+                        item.canRebind(to: Int(id), in: t) && outline?.isItemExpanded(item) == false
+                    }
                 tree = t
                 viewRoot = model.viewRoot
                 let started = Date()
-                roots = t.children(viewRoot).map { Item(id: Int($0), tree: t) }
-                outline?.reloadData()
+                if reuseRows, let outline {
+                    // A rescan often has the same top-level shape. Keep row
+                    // views/disclosure buttons and refresh only their cells.
+                    for (item, id) in zip(roots, childIDs) { item.rebind(to: Int(id), in: t) }
+                    outline.deselectAll(nil)
+                    outline.enumerateAvailableRowViews { rowView, row in
+                        guard self.roots.indices.contains(row) else { return }
+                        for (column, definition) in outline.tableColumns.enumerated() {
+                            if let cell = rowView.view(atColumn: column) as? NSTableCellView {
+                                self.configure(cell, column: definition.identifier.rawValue, item: self.roots[row])
+                            }
+                        }
+                    }
+                } else {
+                    roots = childIDs.map { Item(id: Int($0), tree: t) }
+                    outline?.reloadData()
+                }
                 if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
                     NSLog("BZ list reload: %.1f ms", -started.timeIntervalSinceNow * 1000)
                 }
@@ -485,7 +532,10 @@ struct OutlinePanel: NSViewRepresentable {
 
         // MARK: data source
         func outlineView(_ v: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-            item == nil ? roots.count : (item as! Item).children.count
+            guard let item = item as? Item else { return roots.count }
+            // AppKit asks counts without expanding a row. The flat tree
+            // already knows this; do not allocate wrappers for its children.
+            return item.tree.children(item.id).count
         }
         func outlineView(_ v: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
             item == nil ? roots[index] : (item as! Item).children[index]
@@ -498,7 +548,6 @@ struct OutlinePanel: NSViewRepresentable {
         // MARK: cells
         func outlineView(_ v: NSOutlineView, viewFor col: NSTableColumn?, item: Any) -> NSView? {
             let it = item as! Item
-            let tree = it.tree
             let colID = col?.identifier.rawValue ?? "name"
             let reuse = NSUserInterfaceItemIdentifier("cell-\(colID)")
 
@@ -508,8 +557,7 @@ struct OutlinePanel: NSViewRepresentable {
                     c.identifier = reuse
                     return c
                 }()
-                cell.textField?.stringValue = tree.name(it.id)
-                cell.imageView?.image = icon(for: tree.name(it.id), isDir: tree.isDir(it.id))
+                configure(cell, column: colID, item: it)
                 return cell
             }
 
@@ -518,7 +566,17 @@ struct OutlinePanel: NSViewRepresentable {
                 c.identifier = reuse
                 return c
             }()
-            if colID == "size" {
+            configure(cell, column: colID, item: it)
+            return cell
+        }
+
+        private func configure(_ cell: NSTableCellView, column: String, item it: Item) {
+            let tree = it.tree
+            if column == "name" {
+                let name = tree.name(it.id)
+                cell.textField?.stringValue = name
+                cell.imageView?.image = icon(for: name, isDir: tree.isDir(it.id))
+            } else if column == "size" {
                 cell.textField?.stringValue = Fmt.size(tree.alloc[it.id])
             } else {
                 let parent = Int(tree.parents[it.id])
@@ -527,7 +585,6 @@ struct OutlinePanel: NSViewRepresentable {
                 cell.textField?.stringValue = pct < 0.5 ? "–" : String(format: "%.0f%%", pct)
                 cell.textField?.textColor = .tertiaryLabelColor
             }
-            return cell
         }
 
         func outlineViewSelectionDidChange(_ n: Notification) {
@@ -557,8 +614,10 @@ struct OutlinePanel: NSViewRepresentable {
             for id in chain {
                 guard let it = level.first(where: { $0.id == id }) else { return }
                 target = it
-                if id != chain.last { outline.expandItem(it) }
-                level = it.children
+                if id != chain.last {
+                    outline.expandItem(it)
+                    level = it.children
+                }
             }
             if let target {
                 let row = outline.row(forItem: target)

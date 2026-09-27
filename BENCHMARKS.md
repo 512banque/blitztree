@@ -1,5 +1,10 @@
 # Benchmarks
 
+The [September 27 performance audit](PERFORMANCE_AUDIT.md) records the latest
+before/after scanner, rendering, pointer lookup, cleanup, and outline results,
+with reproducible harnesses and raw samples. The comparisons below are the
+earlier v0.5.0 measurements against other tools.
+
 M4 MacBook (10 cores), macOS 27.0, APFS, warm cache, Full Disk Access for
 every tool. The machine was in normal use (load average 5–9), so runs
 alternate between tools and the table shows the median of five, with the

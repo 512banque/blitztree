@@ -1,0 +1,6 @@
+PASS: cleanup differential/expected matches; outline count and collapsed selection remain lazy
+FDA probe active=false median_ms=0.070 max_ms=0.125
+cleanup nodes=515001 matches=1000 baseline_ms=58.401 optimized_ms=1.086 speedup=53.79x
+cleanup baseline_ms samples=[57.609125, 57.724292, 58.401375, 59.119375, 58.25125, 58.3715, 59.7995, 58.825083, 61.626792] optimized_ms samples=[1.097209, 0.784459, 1.095833, 0.7235, 1.141458, 0.736209, 1.106042, 0.727208, 1.085667]
+cleanup wide_siblings=100003 baseline_ms=2.382 optimized_ms=0.003583
+outline child_count=100000 baseline_ms=5.146 optimized_ms=0.000458 baseline_wrappers=100000 optimized_wrappers=0

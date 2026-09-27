@@ -1,0 +1,175 @@
+{
+  "summary": {
+    "baseline": {
+      "first_median_ms": 166.149,
+      "rescan_median_ms": 127.887,
+      "rescan_range_ms": [
+        98.068,
+        146.779
+      ],
+      "hover_root_bodies": [
+        120,
+        120,
+        120
+      ]
+    },
+    "candidate": {
+      "first_median_ms": 96.848,
+      "rescan_median_ms": 37.044,
+      "rescan_range_ms": [
+        34.702,
+        48.05
+      ],
+      "hover_root_bodies": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "measurements": [
+    {
+      "pair": 0,
+      "build": "baseline",
+      "visible_ms": [
+        166.149,
+        127.887,
+        122.9,
+        124.229
+      ],
+      "root_bodies": [
+        50,
+        36,
+        35,
+        35
+      ],
+      "hover_root_bodies": 120,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    },
+    {
+      "pair": 0,
+      "build": "candidate",
+      "visible_ms": [
+        130.366,
+        47.796,
+        34.702,
+        47.826
+      ],
+      "root_bodies": [
+        3,
+        2,
+        2,
+        2
+      ],
+      "hover_root_bodies": 0,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    },
+    {
+      "pair": 1,
+      "build": "candidate",
+      "visible_ms": [
+        91.236,
+        37.044,
+        35.483,
+        47.6
+      ],
+      "root_bodies": [
+        3,
+        2,
+        2,
+        2
+      ],
+      "hover_root_bodies": 0,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    },
+    {
+      "pair": 1,
+      "build": "baseline",
+      "visible_ms": [
+        192.946,
+        129.976,
+        140.103,
+        146.779
+      ],
+      "root_bodies": [
+        41,
+        36,
+        37,
+        40
+      ],
+      "hover_root_bodies": 120,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    },
+    {
+      "pair": 2,
+      "build": "baseline",
+      "visible_ms": [
+        164.631,
+        98.757,
+        98.068,
+        131.448
+      ],
+      "root_bodies": [
+        37,
+        38,
+        38,
+        40
+      ],
+      "hover_root_bodies": 120,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    },
+    {
+      "pair": 2,
+      "build": "candidate",
+      "visible_ms": [
+        96.848,
+        36.383,
+        36.153,
+        48.05
+      ],
+      "root_bodies": [
+        3,
+        2,
+        2,
+        2
+      ],
+      "hover_root_bodies": 0,
+      "nodes": [
+        332019,
+        332019,
+        332019,
+        332019
+      ]
+    }
+  ],
+  "path": "/Applications",
+  "binary_sha256": {
+    "baseline": "eae5443ce63a1dbda2cbe4435bd483a61ea9b17bdbe1550a17d8ce236812780c",
+    "candidate": "1045c625b97821c68f0ff3f7257c305f701a9d0685eb1c7df2785dcc3aebf92e"
+  }
+}
