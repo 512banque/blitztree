@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 — 2026-09-27
+
+- AI cleanup: while "Delete for good" runs, the size counts down as each item finishes. Since deletes started running in parallel (0.4.1) the number disappeared until the whole delete was done.
+
 ## 0.5.3 — 2026-09-27
 
 BlitzTree is now signed with a Developer ID and notarized by Apple: it opens with a normal double-click, with no Open Anyway step.
