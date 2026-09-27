@@ -26,8 +26,13 @@ struct ContentView: View {
                                 .frame(width: listWidth)
                             ListDivider(width: $listWidth)
                         }
-                        TreemapView(model: model)
-                            .frame(minWidth: 400, maxWidth: .infinity)
+                        Group {
+                            switch model.mapStyle {
+                            case .treemap: TreemapView(model: model)
+                            case .rings: SunburstView(model: model)
+                            }
+                        }
+                        .frame(minWidth: 400, maxWidth: .infinity)
                     }
                     // Hidden by an opaque cover below, not by opacity or hit
                     // testing: SwiftUI re-inserts AppKit views when those change.
@@ -155,11 +160,24 @@ struct ContentView: View {
             ToolbarSpacer(.fixed, placement: .automatic)
         }
 
+        ToolbarItem(placement: .automatic) {
+            Picker("View", selection: $model.mapStyle) {
+                Label("Treemap", systemImage: "square.grid.2x2").tag(MapStyle.treemap)
+                Label("Rings", systemImage: "circle.circle").tag(MapStyle.rings)
+            }
+            .pickerStyle(.segmented)
+            .help("Treemap (WizTree-style) or rings (DaisyDisk-style)")
+        }
+
+        if #available(macOS 26, *) {
+            ToolbarSpacer(.fixed, placement: .automatic)
+        }
+
         ToolbarItemGroup(placement: .automatic) {
             Toggle(isOn: $model.showFreeSpace) {
                 Label("Free Space", systemImage: "square.dashed")
             }
-            .help("Show free space in the treemap")
+            .help("Show free space in the map")
 
             Toggle(isOn: $showTable) {
                 Label("Directory List", systemImage: "sidebar.leading")

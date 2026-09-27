@@ -560,23 +560,26 @@ final class TreemapNSView: NSView {
         guard let model, let tree = model.tree, let leaf = hit(p) else { return }
         model.selection = leaf.node
         needsDisplay = true
-        let path = tree.path(leaf.node)
+        NodeMenu.popUp(path: tree.path(leaf.node), with: event, for: self)
+    }
+}
 
+/// Right-click menu for a file or folder, shared by the treemap and rings.
+final class NodeMenu: NSObject {
+    private static let shared = NodeMenu()
+
+    static func popUp(path: String, with event: NSEvent, for view: NSView) {
         let menu = NSMenu()
-        let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealInFinder(_:)), keyEquivalent: "")
-        reveal.target = self
-        reveal.representedObject = path
-        menu.addItem(reveal)
-        let copy = NSMenuItem(title: "Copy Path", action: #selector(copyPath(_:)), keyEquivalent: "")
-        copy.target = self
-        copy.representedObject = path
-        menu.addItem(copy)
-        menu.addItem(.separator())
-        let trash = NSMenuItem(title: "Move to Trash", action: #selector(moveToTrash(_:)), keyEquivalent: "")
-        trash.target = self
-        trash.representedObject = path
-        menu.addItem(trash)
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        for (title, action) in [("Reveal in Finder", #selector(revealInFinder(_:))),
+                                ("Copy Path", #selector(copyPath(_:))),
+                                ("Move to Trash", #selector(moveToTrash(_:)))] {
+            if action == #selector(moveToTrash(_:)) { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = shared
+            item.representedObject = path
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
     @objc private func revealInFinder(_ sender: NSMenuItem) {

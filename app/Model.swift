@@ -125,6 +125,11 @@ enum FDA {
     }
 }
 
+/// How the scan is drawn: WizTree-style boxes or DaisyDisk-style rings.
+enum MapStyle: String {
+    case treemap, rings
+}
+
 @Observable
 @MainActor
 final class ScanModel {
@@ -202,7 +207,12 @@ final class ScanModel {
     }
     /// A tree has been shown at least once, so the views exist (see ContentView).
     var hasShownTree = false
-    var viewRoot: Int = 0
+    var viewRoot: Int = 0 {
+        didSet {
+            // A selection outside the folder on screen would read as over 100%.
+            if let sel = selection, let tree, !tree.ancestry(sel).contains(viewRoot) { selection = nil }
+        }
+    }
     var selection: Int? = nil
     var hovered: Int? = nil
     var freeBytes: UInt64 = 0
@@ -212,6 +222,9 @@ final class ScanModel {
     var unscannedBytes: UInt64 = 0
     var showFreeSpace: Bool = UserDefaults.standard.bool(forKey: "bz.showFree") {
         didSet { UserDefaults.standard.set(showFreeSpace, forKey: "bz.showFree") }
+    }
+    var mapStyle: MapStyle = MapStyle(rawValue: UserDefaults.standard.string(forKey: "bz.mapStyle") ?? "") ?? .treemap {
+        didSet { UserDefaults.standard.set(mapStyle.rawValue, forKey: "bz.mapStyle") }
     }
 
     private var handle: OpaquePointer?
