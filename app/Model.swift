@@ -291,7 +291,11 @@ final class ScanModel {
             scanning = false
             if let tree {
                 Task {
-                    cleanup = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
+                    let found = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
+                    // A rescan may have replaced the tree while discovery ran.
+                    // Node IDs only belong to the scan that produced them.
+                    guard self.tree === tree else { return }
+                    cleanup = found
                     autoStartIfReady()
                 }
                 NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)

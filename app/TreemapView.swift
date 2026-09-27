@@ -11,11 +11,12 @@ final class TreemapNSView: NSView {
     }
 
     /// Folders an agent plan would remove: lit while the rest dims.
-    var highlights: [Int] = [] { didSet { litRects = nil } }
+    var highlights: [Int] = [] { didSet { if highlights != oldValue { litRects = nil } } }
     /// Their rects in the current layout, found once per change, not per frame.
     private var litRects: [CGRect]?
     private var rects: [TMRect] = []
     private var leaves: [TMRect] = [] // files only, for hit-testing
+    private var leafIndex = TMLeafIndex()
     /// `strip` is the title bar (text + hit target); `region` is the whole
     /// directory rect (hover boundary). Both in view points.
     private var labels: [TMLabel] = []
@@ -44,7 +45,10 @@ final class TreemapNSView: NSView {
 
     func relayout() {
         guard let model, let tree = model.tree, bounds.width > 4, bounds.height > 4 else {
-            rects = []; leaves = []; bitmap = nil
+            rects = []; leaves = []; leafIndex = TMLeafIndex()
+            labels = []; labelHits = []; hoveredLabel = nil; litRects = nil
+            bitmap = nil
+            lastSize = .zero
             needsDisplay = true
             return
         }
@@ -117,13 +121,7 @@ final class TreemapNSView: NSView {
         let rootIndex = model?.viewRoot ?? 0
         let out = RenderOutput()
 
-        // The cushion shader repaints every pixel once per nesting level, so
-        // a full map is tens of millions of shaded pixels. Split the bitmap
-        // into horizontal bands and paint them on every core at once: each
-        // band walks the whole tree in the same order but only writes its
-        // own rows, so the result is pixel-identical to one pass.
-        // The cushion shader repaints every pixel once per nesting level:
-        // tens of millions of shaded pixels for a full map. Lay it out once,
+        // Lay out once, omit cushions completely covered by opaque children,
         // then paint horizontal bands on every core; each band runs the same
         // steps in the same order over its own rows only, so the result is
         // pixel-identical to a single pass.
@@ -150,6 +148,7 @@ final class TreemapNSView: NSView {
         }
         rects = out.rects
         leaves = out.leaves
+        leafIndex = TMLeafIndex(leaves: leaves, size: bounds.size)
         litRects = nil
         labels = out.labels
 
@@ -234,11 +233,10 @@ final class TreemapNSView: NSView {
                                  width: rect.width - 4, height: rect.height - headerH - 2)
             }
 
-            // Parent cushion first: covers sub-pixel children and
-            // pixel-snap slivers, so the map has no holes.
-            ops.append(.shade(content, TypeColor.dir, s))
+            // Retain the parent cushion wherever child tiles leave rounded
+            // pixels uncovered. Fully covered parents need no shading.
             if content.width >= 3, content.height >= 3 {
-                let level: [(node: Int, rect: CGRect)]
+                let level: Squarify.Layout
                 if depth == 0, showFree, freeBytes > 0 {
                     // Free disk space competes for area like a file.
                     var items: [(node: Int, size: Double)] = tree.children(layoutNode).compactMap {
@@ -251,7 +249,8 @@ final class TreemapNSView: NSView {
                 } else {
                     level = Squarify.layoutLevel(tree: tree, dir: layoutNode, rect: content)
                 }
-                for (kid, r) in level {
+                if !level.coversBounds { ops.append(.shade(content, TypeColor.dir, s)) }
+                for (kid, r) in level.tiles {
                     if kid == -1 {
                         // Flat, quiet void — clearly "nothing here".
                         ops.append(.shade(r, TypeColor.free, Surface()))
@@ -264,6 +263,8 @@ final class TreemapNSView: NSView {
                         draw(kid, r, depth == 0 ? h : h * Cushion.falloff, s, depth + 1)
                     }
                 }
+            } else {
+                ops.append(.shade(content, TypeColor.dir, s))
             }
             // Separation frames for unheaded dirs (headed ones have
             // their own frame already).
@@ -297,6 +298,22 @@ final class TreemapNSView: NSView {
             let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
             let y0 = max(by0, Int(r.minY.rounded())), y1 = min(by1, Int(r.maxY.rounded()))
             guard x1 > x0, y1 > y0 else { return }
+            // Root backgrounds, directory strips and free space have a
+            // constant normal. Calculate their color once, then fill rows.
+            if s.ax2 == 0, s.ay2 == 0 {
+                let nx = -s.ax1, ny = -s.ay1
+                let cos = (nx * Cushion.lx + ny * Cushion.ly + Cushion.lz)
+                    / (nx * nx + ny * ny + 1).squareRoot()
+                let lum = Cushion.ambient + max(0, cos) * (1 - Cushion.ambient)
+                let r8 = UInt32(min(255, rgb.r * lum * 255))
+                let g8 = UInt32(min(255, rgb.g * lum * 255))
+                let b8 = UInt32(min(255, rgb.b * lum * 255))
+                let pixel = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
+                for py in y0..<y1 {
+                    (base + py * pw + x0).update(repeating: pixel, count: x1 - x0)
+                }
+                return
+            }
             for py in y0..<y1 {
                 let fy = Double(py) + 0.5
                 let ny = -(2 * s.ay2 * fy + s.ay1)
@@ -496,7 +513,7 @@ final class TreemapNSView: NSView {
 
     private func hit(_ point: CGPoint) -> TMRect? {
         // Files are disjoint; smallest matching leaf wins.
-        leaves.last(where: { $0.rect.contains(point) })
+        leafIndex.hit(point, leaves: leaves)
     }
 
     private var hoveredLabel: Int? = nil

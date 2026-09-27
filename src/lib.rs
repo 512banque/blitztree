@@ -7,10 +7,11 @@
 pub mod ffi;
 pub mod searchfs;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::{c_int, c_void, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::HashSet;
 use std::sync::Mutex;
 
 // ---- FFI: getattrlistbulk ----
@@ -57,6 +58,13 @@ const SF_DATALESS: u32 = 0x4000_0000;
 
 const BUF_SIZE: usize = 256 * 1024;
 
+thread_local! {
+    // A worker reads one directory at a time, and releases the buffer before
+    // spawning its children. Reuse its allocation instead of allocating and
+    // zeroing 256 KiB for every directory (including empty directories).
+    static BULK_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0; BUF_SIZE]);
+}
+
 // ---- Tree model ----
 
 pub const NO_PARENT: u32 = u32::MAX;
@@ -101,7 +109,15 @@ struct RawEntry {
 }
 
 /// Read all entries of one directory in bulk. Returns None if the dir can't be opened.
-fn read_dir_bulk(path: &Path, buf: &mut Vec<u8>, progress: &Progress) -> Option<Vec<RawEntry>> {
+fn read_dir_bulk(path: &Path, progress: &Progress) -> Option<Vec<RawEntry>> {
+    BULK_BUFFER.with_borrow_mut(|buf| read_dir_bulk_buffered(path, buf, progress))
+}
+
+fn read_dir_bulk_buffered(
+    path: &Path,
+    buf: &mut [u8],
+    progress: &Progress,
+) -> Option<Vec<RawEntry>> {
     let cpath = CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let fd = unsafe {
         libc::open(
@@ -280,11 +296,12 @@ struct Shared<'a> {
 }
 
 fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf, dir_idx: u32) {
-    let mut buf = vec![0u8; BUF_SIZE];
-    let Some(mut entries) = read_dir_bulk(&dir_path, &mut buf, shared.progress) else {
+    let Some(mut entries) = read_dir_bulk(&dir_path, shared.progress) else {
         return;
     };
-    drop(buf);
+    if entries.is_empty() {
+        return;
+    }
 
     if entries.iter().any(|e| e.hardlink.is_some()) {
         let mut seen = shared.hardlinks.lock().unwrap();
@@ -301,9 +318,13 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
     let mut n_files = 0u64;
     let mut n_dirs = 0u64;
     let mut bytes = 0u64;
-    for e in &entries {
+    let mut subdirs = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
         if e.is_dir {
             n_dirs += 1;
+            if !e.dataless && !e.mount_point {
+                subdirs.push((i as u32, dir_path.join(&*e.name)));
+            }
         } else {
             n_files += 1;
             bytes += e.alloc;
@@ -317,9 +338,11 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
     let base = {
         let mut arena = shared.arena.lock().unwrap();
         let base = arena.len() as u32;
-        for e in &entries {
+        let end = base + entries.len() as u32;
+        arena.reserve(entries.len());
+        for e in entries {
             arena.push(Node {
-                name: e.name.clone(),
+                name: e.name,
                 parent: dir_idx,
                 size: e.size,
                 alloc: e.alloc,
@@ -328,16 +351,13 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
                 children: Vec::new(),
             });
         }
-        arena[dir_idx as usize].children = (base..base + entries.len() as u32).collect();
+        arena[dir_idx as usize].children = (base..end).collect();
         base
     };
 
-    for (i, e) in entries.iter().enumerate() {
-        if e.is_dir && !e.dataless && !e.mount_point {
-            let child_idx = base + i as u32;
-            let child_path = dir_path.join(&*e.name);
-            scope.spawn(move |s| walk(s, shared, child_path, child_idx));
-        }
+    for (i, child_path) in subdirs {
+        let child_idx = base + i;
+        scope.spawn(move |s| walk(s, shared, child_path, child_idx));
     }
 }
 
@@ -400,24 +420,28 @@ pub fn scan(root: &Path, progress: &Progress) -> Scan {
 /// Count-only walk with no tree building: measures the pure syscall floor.
 pub fn scan_count(root: &Path, progress: &Progress) {
     fn go<'s>(scope: &rayon::Scope<'s>, progress: &'s Progress, dir: PathBuf) {
-        let mut buf = vec![0u8; BUF_SIZE];
-        let Some(entries) = read_dir_bulk(&dir, &mut buf, progress) else {
+        let Some(entries) = read_dir_bulk(&dir, progress) else {
             return;
         };
-        drop(buf);
+        let mut n_files = 0u64;
+        let mut n_dirs = 0u64;
+        let mut bytes = 0u64;
         for e in entries {
             if e.is_dir {
-                progress.dirs.fetch_add(1, Ordering::Relaxed);
+                n_dirs += 1;
                 if e.dataless || e.mount_point {
                     continue;
                 }
                 let p = dir.join(&*e.name);
                 scope.spawn(move |s| go(s, progress, p));
             } else {
-                progress.files.fetch_add(1, Ordering::Relaxed);
-                progress.bytes.fetch_add(e.alloc, Ordering::Relaxed);
+                n_files += 1;
+                bytes += e.alloc;
             }
         }
+        progress.files.fetch_add(n_files, Ordering::Relaxed);
+        progress.dirs.fetch_add(n_dirs, Ordering::Relaxed);
+        progress.bytes.fetch_add(bytes, Ordering::Relaxed);
     }
     rayon::scope(|s| go(s, progress, root.to_path_buf()));
 }
@@ -441,6 +465,97 @@ fn aggregate(nodes: &mut [Node]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bulk_record(name: &str, is_dir: bool, flags: u32, mount_status: u32, links: u32) -> Vec<u8> {
+        let mut e = vec![0u8; 4];
+        let common = ATTR_CMN_RETURNED_ATTRS
+            | ATTR_CMN_ERROR
+            | ATTR_CMN_NAME
+            | ATTR_CMN_DEVID
+            | ATTR_CMN_OBJTYPE
+            | ATTR_CMN_FLAGS
+            | ATTR_CMN_FILEID;
+        let dir = if is_dir { ATTR_DIR_MOUNTSTATUS } else { 0 };
+        let file = if is_dir {
+            0
+        } else {
+            ATTR_FILE_LINKCOUNT | ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE
+        };
+        for value in [common, 0, dir, file, 0, 0] {
+            e.extend_from_slice(&value.to_le_bytes());
+        }
+        let name_ref = e.len();
+        e.extend_from_slice(&[0u8; 8]);
+        for value in [17u32, if is_dir { VDIR } else { 1 }, flags] {
+            e.extend_from_slice(&value.to_le_bytes());
+        }
+        e.extend_from_slice(&123456u64.to_le_bytes());
+        if is_dir {
+            e.extend_from_slice(&mount_status.to_le_bytes());
+        } else {
+            e.extend_from_slice(&links.to_le_bytes());
+            e.extend_from_slice(&12345i64.to_le_bytes());
+            e.extend_from_slice(&16384i64.to_le_bytes());
+        }
+        let name_offset = (e.len() - name_ref) as u32;
+        e[name_ref..name_ref + 4].copy_from_slice(&name_offset.to_le_bytes());
+        e[name_ref + 4..name_ref + 8].copy_from_slice(&(name.len() as u32 + 1).to_le_bytes());
+        e.extend_from_slice(name.as_bytes());
+        e.push(0);
+        let len = e.len() as u32;
+        e[..4].copy_from_slice(&len.to_le_bytes());
+        e
+    }
+
+    #[test]
+    fn bulk_parser_preserves_cloud_mount_and_hardlink_metadata() {
+        let mut entries = Vec::new();
+        parse_entry(&bulk_record("cloud", true, SF_DATALESS, 0, 1), &mut entries);
+        parse_entry(
+            &bulk_record("mounted", true, 0, DIR_MNTSTATUS_MNTPOINT, 1),
+            &mut entries,
+        );
+        parse_entry(&bulk_record("linked-é", false, 0, 0, 2), &mut entries);
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].is_dir && entries[0].dataless && !entries[0].mount_point);
+        assert!(entries[1].is_dir && !entries[1].dataless && entries[1].mount_point);
+        assert_eq!(&*entries[2].name, "linked-é");
+        assert_eq!(entries[2].hardlink, Some((17, 123456)));
+        assert_eq!((entries[2].size, entries[2].alloc), (12345, 16384));
+    }
+
+    #[test]
+    fn scan_preserves_parent_links_empty_dirs_and_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("bz-tree-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("nested/empty")).unwrap();
+        std::fs::write(root.join("nested/document-é"), [7u8; 17]).unwrap();
+        symlink(&root, root.join("loop")).unwrap();
+        let result = scan(&root, &Progress::default());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(result.errors, 0);
+        assert_eq!(result.nodes.len(), 5, "directory symlinks are not followed");
+        assert_eq!(result.nodes[0].n_files, 2);
+        for (parent, node) in result.nodes.iter().enumerate() {
+            for &child in &node.children {
+                assert!(child as usize > parent);
+                assert_eq!(result.nodes[child as usize].parent as usize, parent);
+            }
+        }
+        let empty = result
+            .nodes
+            .iter()
+            .find(|node| &*node.name == "empty")
+            .unwrap();
+        assert!(empty.is_dir && empty.children.is_empty());
+        let file = result
+            .nodes
+            .iter()
+            .find(|node| &*node.name == "document-é")
+            .unwrap();
+        assert_eq!(file.size, 17);
+    }
 
     #[test]
     fn hardlinks_count_once() {

@@ -1,0 +1,53 @@
+#include "ui_fixture.h"
+#include <stdlib.h>
+#include <string.h>
+
+struct BzScan {
+    uint32_t count;
+    uint32_t *parents, *nfiles, *child_off, *children, *name_off;
+    uint64_t *alloc;
+    uint8_t *flags, *name_blob;
+};
+static void *copied(const void *source, size_t bytes) {
+    void *result = malloc(bytes ? bytes : 1);
+    if (!result) abort();
+    if (bytes) memcpy(result, source, bytes);
+    return result;
+}
+BzScan *bz_fixture_create(uint32_t n, const uint32_t *parents,
+                         const uint64_t *alloc, const uint8_t *flags,
+                         const uint32_t *child_off, const uint32_t *children,
+                         const uint32_t *name_off, const uint8_t *name_blob) {
+    BzScan *h = calloc(1, sizeof(*h));
+    if (!h) abort();
+    h->count = n;
+    h->parents = copied(parents, n * sizeof(*parents));
+    h->alloc = copied(alloc, n * sizeof(*alloc));
+    h->flags = copied(flags, n * sizeof(*flags));
+    h->nfiles = calloc(n, sizeof(*h->nfiles));
+    h->child_off = copied(child_off, (n + 1) * sizeof(*child_off));
+    h->children = copied(children, child_off[n] * sizeof(*children));
+    h->name_off = copied(name_off, (n + 1) * sizeof(*name_off));
+    h->name_blob = copied(name_blob, name_off[n]);
+    return h;
+}
+BzScan *bz_scan_start(const char *path) { (void)path; abort(); }
+void bz_progress(BzScan *h, uint64_t *f, uint64_t *d, uint64_t *b, int *done) {
+    (void)h; *f = 0; *d = 0; *b = 0; *done = 1;
+}
+uint64_t bz_take_tree(BzScan *h) { return h->count; }
+const uint32_t *bz_parents(BzScan *h) { return h->parents; }
+const uint64_t *bz_alloc(BzScan *h) { return h->alloc; }
+const uint64_t *bz_logical(BzScan *h) { return h->alloc; }
+const uint32_t *bz_nfiles(BzScan *h) { return h->nfiles; }
+const uint8_t *bz_flags(BzScan *h) { return h->flags; }
+const uint32_t *bz_child_off(BzScan *h) { return h->child_off; }
+const uint32_t *bz_children(BzScan *h) { return h->children; }
+const uint32_t *bz_name_off(BzScan *h) { return h->name_off; }
+const uint8_t *bz_name_blob(BzScan *h) { return h->name_blob; }
+uint64_t bz_errors(BzScan *h) { (void)h; return 0; }
+void bz_free(BzScan *h) {
+    if (!h) return;
+    free(h->parents); free(h->alloc); free(h->flags); free(h->nfiles);
+    free(h->child_off); free(h->children); free(h->name_off); free(h->name_blob); free(h);
+}

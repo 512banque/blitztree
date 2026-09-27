@@ -485,7 +485,10 @@ struct OutlinePanel: NSViewRepresentable {
 
         // MARK: data source
         func outlineView(_ v: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-            item == nil ? roots.count : (item as! Item).children.count
+            guard let item = item as? Item else { return roots.count }
+            // AppKit asks counts without expanding a row. The flat tree
+            // already knows this; do not allocate wrappers for its children.
+            return item.tree.children(item.id).count
         }
         func outlineView(_ v: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
             item == nil ? roots[index] : (item as! Item).children[index]
@@ -508,8 +511,9 @@ struct OutlinePanel: NSViewRepresentable {
                     c.identifier = reuse
                     return c
                 }()
-                cell.textField?.stringValue = tree.name(it.id)
-                cell.imageView?.image = icon(for: tree.name(it.id), isDir: tree.isDir(it.id))
+                let name = tree.name(it.id)
+                cell.textField?.stringValue = name
+                cell.imageView?.image = icon(for: name, isDir: tree.isDir(it.id))
                 return cell
             }
 
@@ -557,8 +561,10 @@ struct OutlinePanel: NSViewRepresentable {
             for id in chain {
                 guard let it = level.first(where: { $0.id == id }) else { return }
                 target = it
-                if id != chain.last { outline.expandItem(it) }
-                level = it.children
+                if id != chain.last {
+                    outline.expandItem(it)
+                    level = it.children
+                }
             }
             if let target {
                 let row = outline.row(forItem: target)

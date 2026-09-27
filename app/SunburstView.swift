@@ -24,9 +24,13 @@ final class SunburstNSView: NSView {
     }
 
     /// Folders an agent plan would remove: lit while the rest dims.
-    var highlights: [Int] = []
+    var highlights: [Int] = [] { didSet { if highlights != oldValue { litSegments = nil } } }
 
     private var segments: [SBSegment] = []
+    private var segmentPaths: [CGPath] = []
+    /// Layout visits each ring in angular order, despite interleaving rings.
+    private var segmentsByRing: [[Int]] = []
+    private var litSegments: [Int]?
     /// Ring edges in points: radii[0] is the centre disc, ring k spans
     /// radii[k]..<radii[k + 1].
     private var radii: [CGFloat] = []
@@ -74,7 +78,9 @@ final class SunburstNSView: NSView {
     func relayout() {
         hoveredSegment = nil
         guard let model, let tree = model.tree, bounds.width > 40, bounds.height > 40 else {
-            segments = []; bitmap = nil
+            segments = []; segmentPaths = []; segmentsByRing = []; radii = []
+            litSegments = nil; hoveringCenter = false; bitmap = nil
+            lastSize = .zero
             needsDisplay = true
             return
         }
@@ -90,6 +96,10 @@ final class SunburstNSView: NSView {
             tree: tree, root: model.viewRoot, radii: radii,
             freeBytes: model.showFreeSpace && model.viewRoot == 0 ? model.freeBytes : 0
         )
+        segmentPaths = segments.map { arcPath(ring: $0.ring, start: $0.start, end: $0.end) }
+        segmentsByRing = Array(repeating: [], count: radii.count - 1)
+        for i in segments.indices { segmentsByRing[segments[i].ring].append(i) }
+        litSegments = nil
         let laidOut = Date()
         bitmap = render()
         if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
@@ -234,8 +244,8 @@ final class SunburstNSView: NSView {
         ctx.setFillColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
         ctx.fill(bounds)
 
-        for s in segments {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+        for (i, s) in segments.enumerated() {
+            ctx.addPath(segmentPaths[i])
             ctx.setFillColor(CGColor(red: s.color.r, green: s.color.g, blue: s.color.b, alpha: 1))
             ctx.fillPath()
         }
@@ -247,7 +257,7 @@ final class SunburstNSView: NSView {
         ] as CFArray, locations: [0, 1]) {
             var byRing = [CGMutablePath](repeating: CGMutablePath(), count: radii.count - 1)
             for k in byRing.indices { byRing[k] = CGMutablePath() }
-            for s in segments { byRing[s.ring].addPath(arcPath(ring: s.ring, start: s.start, end: s.end)) }
+            for (i, s) in segments.enumerated() { byRing[s.ring].addPath(segmentPaths[i]) }
             ctx.saveGState()
             ctx.setBlendMode(.multiply)
             for (k, arcs) in byRing.enumerated() where !arcs.isEmpty {
@@ -265,9 +275,7 @@ final class SunburstNSView: NSView {
         ctx.setStrokeColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
         ctx.setLineWidth(1)
         ctx.setLineJoin(.round)
-        for s in segments {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
-        }
+        for path in segmentPaths { ctx.addPath(path) }
         ctx.strokePath()
 
         // Centre disc: the folder being shown.
@@ -291,18 +299,21 @@ final class SunburstNSView: NSView {
         guard let model, let tree = model.tree, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         if !highlights.isEmpty {
-            let wanted = Set(highlights)
-            let lit = segments.filter { wanted.contains($0.node) }
+            if litSegments == nil {
+                let wanted = Set(highlights)
+                litSegments = segments.indices.filter { wanted.contains(segments[$0].node) }
+            }
+            let lit = litSegments ?? []
             if !lit.isEmpty {
                 let dim = CGMutablePath()
                 dim.addRect(bounds)
-                for s in lit { dim.addPath(wedgePath(s)) }
+                for i in lit { dim.addPath(wedgePath(segments[i])) }
                 ctx.addPath(dim)
                 ctx.setFillColor(NSColor.black.withAlphaComponent(0.6).cgColor)
                 ctx.fillPath(using: .evenOdd)
                 ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
                 ctx.setLineWidth(1.5)
-                for s in lit { ctx.addPath(wedgePath(s)) }
+                for i in lit { ctx.addPath(wedgePath(segments[i])) }
                 ctx.strokePath()
             }
         }
@@ -312,14 +323,14 @@ final class SunburstNSView: NSView {
             ctx.addPath(wedgePath(s))
             ctx.setFillColor(NSColor.white.withAlphaComponent(0.16).cgColor)
             ctx.fillPath()
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+            ctx.addPath(segmentPaths[i])
             ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.9).cgColor)
             ctx.setLineWidth(1.5)
             ctx.strokePath()
         }
 
-        if let sel = model.selection, let s = segments.first(where: { $0.node == sel }) {
-            ctx.addPath(arcPath(ring: s.ring, start: s.start, end: s.end))
+        if let sel = model.selection, let i = segments.firstIndex(where: { $0.node == sel }) {
+            ctx.addPath(segmentPaths[i])
             ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
             ctx.setLineWidth(2)
             ctx.strokePath()
@@ -410,7 +421,14 @@ final class SunburstNSView: NSView {
         guard let ring = (0..<(radii.count - 1)).first(where: { r < radii[$0 + 1] }) else { return nil }
         var a = atan2(dy, dx) + .pi / 2
         if a < 0 { a += 2 * .pi }
-        return segments.firstIndex { $0.ring == ring && a >= $0.start && a < $0.end }.map { .segment($0) }
+        let indices = segmentsByRing[ring]
+        var lo = 0, hi = indices.count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if segments[indices[mid]].end <= a { lo = mid + 1 } else { hi = mid }
+        }
+        guard lo < indices.count, a >= segments[indices[lo]].start else { return nil }
+        return .segment(indices[lo])
     }
 
     override func keyDown(with event: NSEvent) {

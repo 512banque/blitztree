@@ -25,16 +25,20 @@ nonisolated enum Cleanup {
         while let i = stack.popLast() {
             for c in tree.children(i) {
                 let child = Int(c)
+                // Sizes include descendants, and the engine orders siblings
+                // largest first. Once below the threshold, neither this
+                // subtree nor any remaining sibling can contain a match.
+                guard tree.alloc[child] >= minBytes else { break }
+                guard tree.isDir(child) else { continue }
+                let name = tree.name(child)
                 // Already-trashed things aren't worth offering again.
-                guard tree.isDir(child), tree.name(child) != ".Trash" else { continue }
-                if let kind = kind(of: child, in: tree) {
-                    if tree.alloc[child] >= minBytes {
-                        let path = tree.path(child)
-                        var display = tree.displayPath(child)
-                        if display.hasPrefix(home) { display = "~" + display.dropFirst(home.count) }
-                        found.append(CleanupItem(node: child, path: path, display: display,
-                                                 kind: kind, bytes: tree.alloc[child]))
-                    }
+                guard name != ".Trash" else { continue }
+                if let kind = kind(of: child, name: name, in: tree) {
+                    let path = tree.path(child)
+                    var display = tree.displayPath(child)
+                    if display.hasPrefix(home) { display = "~" + display.dropFirst(home.count) }
+                    found.append(CleanupItem(node: child, path: path, display: display,
+                                             kind: kind, bytes: tree.alloc[child]))
                 } else {
                     stack.append(child)
                 }
@@ -43,10 +47,11 @@ nonisolated enum Cleanup {
         return found.sorted { $0.bytes > $1.bytes }
     }
 
-    private static func kind(of i: Int, in tree: Tree) -> String? {
-        let name = tree.name(i)
+    private static func kind(of i: Int, name: String, in tree: Tree) -> String? {
         let parent = Int(tree.parents[i])
-        let parentName = parent == Int(UInt32.max) ? "" : tree.name(parent)
+        // Most directory names do not match. Only decode the parent for the
+        // few rules whose meaning depends on it.
+        func parentName() -> String { parent == Int(UInt32.max) ? "" : tree.name(parent) }
         switch name {
         case "node_modules":
             return "npm packages, reinstallable"
@@ -58,15 +63,15 @@ nonisolated enum Cleanup {
             return "Rust build output"
         case ".next" where contains(parent, "package.json", in: tree):
             return "Next.js build output"
-        case "DerivedData" where parentName == "Xcode":
+        case "DerivedData" where parentName() == "Xcode":
             return "Xcode build data"
         case "iOS DeviceSupport", "macOS DeviceSupport", "watchOS DeviceSupport":
             return "Device symbols, re-downloaded when needed"
-        case "Caches" where parentName == "Library" || parentName == "CoreSimulator":
+        case "Caches" where parentName() == "Library" || parentName() == "CoreSimulator":
             return "App caches, rebuilt automatically"
         case ".cache", ".npm", ".gradle":
             return "Caches, rebuilt or re-downloaded when needed"
-        case "cache" where parentName == "install" && grandparentName(of: parent, in: tree) == ".bun":
+        case "cache" where parentName() == "install" && grandparentName(of: parent, in: tree) == ".bun":
             return "Bun package cache, re-downloaded when needed"
         default:
             return nil

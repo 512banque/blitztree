@@ -1,0 +1,29 @@
+Command: cargo test --release --lib flatten_benchmark -- --ignored --nocapture
+Fixture: 262401 nodes = 1 root + 256 directories + 262144 files (1024 files/directory)
+Method: 10 alternating old/new pairs; fixture construction excluded; variant 0 original reference, variant 1 optimized.
+Times are nanoseconds. Measurements include source-tree deallocation during conversion.
+workload,round,variant,nanoseconds
+flatten,0,0,8151292
+flatten,0,1,6704375
+flatten,1,1,6596000
+flatten,1,0,6759500
+flatten,2,0,6314583
+flatten,2,1,5965625
+flatten,3,1,5594333
+flatten,3,0,6814459
+flatten,4,0,6664292
+flatten,4,1,5894292
+flatten,5,1,5742667
+flatten,5,0,6820708
+flatten,6,0,6191709
+flatten,6,1,5670958
+flatten,7,1,5519125
+flatten,7,0,6762875
+flatten,8,0,14131917
+flatten,8,1,8160291
+flatten,9,1,7320875
+flatten,9,0,8116667
+Baseline median: 6788667 ns (6.788667 ms)
+Optimized median: 5929958.5 ns (5.9299585 ms)
+Median reduction: 12.649% (1.145x speedup)
+Pass: benchmark completed; separate release correctness suite: 4 passed, 1 ignored.

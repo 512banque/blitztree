@@ -1,0 +1,6 @@
+scan_path=/Applications
+real cleanup nodes=332019 matches=2 unreadable=0 baseline_ms=10.579 optimized_ms=0.060 speedup=174.98x
+baseline_ms=[5.986542, 5.3, 5.354, 8.728708, 13.473125, 11.167667, 10.579084, 12.59025, 10.894375] optimized_ms=[0.047792, 0.034209, 0.049708, 0.034959, 0.1595, 0.060458, 0.222292, 0.070084, 0.084208]
+scan_path=~/repos
+real cleanup nodes=264259 matches=20 unreadable=0 baseline_ms=1.677 optimized_ms=0.096 speedup=17.46x
+baseline_ms=[3.47825, 3.675709, 2.337375, 1.676583, 1.351958, 1.2755, 1.245375, 1.229416, 2.262209] optimized_ms=[0.225958, 0.269916, 0.116875, 0.096041, 0.093041, 0.086333, 0.085541, 0.085125, 0.160167]
