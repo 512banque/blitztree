@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Treemap renders about 2x faster (each pixel shaded once) and hover redraws only what changed, with identical pixels.
+- Selecting a file inside a very large folder in the list is about 2x faster.
+
 ## 0.5.1 — 2026-09-27
 
 This release improves scan memory use, rendering, post-scan responsiveness, and cleanup plan processing.

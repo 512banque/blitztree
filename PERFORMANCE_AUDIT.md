@@ -222,6 +222,38 @@ ordered failures, one completion/rescan, and delayed agent discovery. Failures
 are retained on the model even if the inspector closes during the batch.
 See [`benchmarks/AGENT.md`](benchmarks/AGENT.md).
 
+## Third pass: once-per-pixel treemap and list selection
+
+Baseline: `0648293` (v0.5.1); rechecked identical against `2d9481d`. Same machine, load average 4–11, runs alternated
+under a shared lock.
+
+### Treemap paints each pixel once
+
+The painter first records which shade step ends up on top of each pixel
+(integer fills), then runs the cushion shader once per pixel, four pixels at a
+time with the same operations in the same order, and finally applies only the
+frame darkening that came after that owner. The image takes the pixel buffer
+without a copy, layout is a struct with reused buffers, and hover redraws only
+the outline bands that changed, with label text laid out once per render.
+`benchmarks/rendering.py --real` compares any git ref on real scans:
+
+| `/Applications`, median ms | v0.5.1 | Now |
+|---|---:|---:|
+| 3200×2000 layout + paint + index | 45.4 | 22.4 |
+| 1600×1600 | 34.8 | 18.3 |
+| 3200×2000 zoomed | 23.4 | 18.6 |
+| 3200×2000 with free space | 40.3 | 19.0 |
+| Redraw per mouse move | 17.4 | 0.22 |
+
+Bitmaps, geometry and 300 hover frames (plus 51 with agent highlights) are
+identical to v0.5.1, and the synthetic harness passes at scale 1 and 2.
+
+### List selection
+
+Outline items are `NSObject`s, so the outline view compares them by pointer
+rather than through Swift runtime casts: selecting a file inside a
+107k-item folder went from 212 ms (189–229) to 115 ms (114–140).
+
 ## Verification and reproduction
 
 ```sh

@@ -69,5 +69,5 @@ engine scan plus about 0.15 s to hand the tree to the UI.
   window skipped frames for ~0.2–0.4 s mid-scan. Leaving cores free instead
   cost speed: 4 workers took 14 s on the home folder, 6 took 11 s.
 - Treemap render (1600×1600 px, /Applications): 100–190 ms on one thread
-  before, now ~12 ms layout + ~16 ms paint across 30 row bands, pixel-for-pixel
+  originally, now ~5 ms layout + ~3 ms paint across 30 row bands, pixel-for-pixel
   the same image.
