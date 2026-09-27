@@ -137,7 +137,7 @@ struct CleanupPanel: View {
                 }
                 .contentShape(Rectangle())
                 .help(item.display)
-                .onTapGesture { model.selection = item.node }
+                .onTapGesture { model.reveal(item.node) }
                 .contextMenu {
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
@@ -438,7 +438,7 @@ private struct AgentRunView: View {
                 PlanCard(item: item, editable: run.phase == .planned, current: run.current == item.id) {
                     guard let tree = model.tree, let path = item.paths.first,
                           let node = tree.node(at: path) else { return }
-                    model.selection = node
+                    model.reveal(node)
                 }
                 .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
             }

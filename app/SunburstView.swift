@@ -388,7 +388,9 @@ final class SunburstNSView: NSView {
 
         if !highlights.isEmpty {
             if litSegments == nil {
-                let wanted = Set(highlights)
+                // Folders deeper than the rings light the arc that holds them.
+                let drawn = Dictionary(segments.indices.map { (segments[$0].node, $0) }) { a, _ in a }
+                let wanted = Set(highlights.compactMap { node in tree.drawn(node) { drawn[$0] != nil } })
                 litSegments = segments.indices.filter { wanted.contains(segments[$0].node) }
             }
             let lit = litSegments ?? []
@@ -417,7 +419,9 @@ final class SunburstNSView: NSView {
             ctx.strokePath()
         }
 
-        if let sel = model.selection, let i = segments.firstIndex(where: { $0.node == sel }) {
+        if let sel = model.selection,
+           let shown = tree.drawn(sel, isDrawn: { node in segments.contains { $0.node == node } }),
+           let i = segments.firstIndex(where: { $0.node == shown }) {
             ctx.addPath(segmentPaths[i])
             ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
             ctx.setLineWidth(2)

@@ -109,6 +109,19 @@ nonisolated final class Tree: @unchecked Sendable {
         }
         return chain.reversed()
     }
+
+    /// What a map draws for `node`: itself, or when it has no shape of its
+    /// own (merged into an "A ▸ B" box, too deep for the rings) the nearest
+    /// drawn folder that is mostly it. Nil when only a much larger folder is.
+    func drawn(_ node: Int, isDrawn: (Int) -> Bool) -> Int? {
+        var cur = node
+        while !isDrawn(cur) {
+            let parent = parents[cur]
+            guard parent != UInt32.max, alloc[Int(parent)] <= 2 * alloc[node] else { return nil }
+            cur = Int(parent)
+        }
+        return cur
+    }
 }
 
 enum FDA {
@@ -225,6 +238,13 @@ final class ScanModel {
         }
     }
     var selection: Int? = nil
+
+    /// Select a node from a list, zooming out first if it is outside the
+    /// folder on screen (it would have nothing to outline).
+    func reveal(_ node: Int) {
+        if let tree, !tree.ancestry(node).contains(viewRoot) { viewRoot = 0 }
+        selection = node
+    }
     var hovered: Int? = nil
     var freeBytes: UInt64 = 0
     /// Rebuildable folders worth deleting, largest first.
