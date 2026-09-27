@@ -119,13 +119,29 @@ nonisolated enum AgentLocator {
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return ("", -1) }
+        // Read while it runs: output past the pipe's 64 KB would stall it.
+        let text = OutputText()
+        let read = DispatchGroup()
+        read.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            text.set(out.fileHandleForReading.readDataToEndOfFile())
+            read.leave()
+        }
         // A slow shell profile shouldn't hold the panel up.
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline { usleep(20_000) }
         if process.isRunning { process.terminate(); return ("", -1) }
-        return (String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
-                process.terminationStatus)
+        // Something the shell left running may hold the pipe open; don't wait on it.
+        _ = read.wait(timeout: .now() + 1)
+        return (text.value, process.terminationStatus)
     }
+}
+
+nonisolated final class OutputText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    func set(_ new: Data) { lock.lock(); data = new; lock.unlock() }
+    var value: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
 }
 
 // MARK: - One-click setup
@@ -312,6 +328,30 @@ nonisolated struct PartialPlanParser {
 
 // MARK: - Guards (enforced here, never left to the model)
 
+/// When Codex last worked in each folder, from its session logs: every
+/// rollout file opens with the chat's working folder and is appended to as
+/// the chat goes on.
+nonisolated enum CodexSessions {
+    static func lastActive(since: Date? = nil) -> [String: Date] {
+        let home = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? NSHomeDirectory() + "/.codex"
+        let root = URL(fileURLWithPath: home + "/sessions")
+        guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return [:] }
+        var active: [String: Date] = [:]
+        for case let url as URL in files where url.pathExtension == "jsonl" {
+            guard let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  since.map({ date > $0 }) ?? true,
+                  let file = try? FileHandle(forReadingFrom: url) else { continue }
+            let head = String(decoding: (try? file.read(upToCount: 8192)) ?? Data(), as: UTF8.self)
+            try? file.close()
+            guard let match = head.firstMatch(of: /"cwd":"((?:[^"\\]|\\.)*)"/) else { continue }
+            let cwd = String(match.1).replacingOccurrences(of: "\\/", with: "/")
+            active[cwd] = max(active[cwd] ?? date, date)
+        }
+        return active
+    }
+}
+
 nonisolated enum CleanupGuard {
     static let home = NSHomeDirectory()
 
@@ -343,9 +383,9 @@ nonisolated enum CleanupGuard {
         "uv cache clean", "uv cache prune", "bun pm cache rm", "npm cache clean", "pnpm store prune",
         "yarn cache clean", "brew cleanup", "brew autoremove", "docker system prune",
         "docker image prune", "docker builder prune", "docker container prune",
-        "xcrun simctl delete unavailable", "xcrun simctl runtime delete", "pip cache purge",
-        "pip3 cache purge", "ollama rm ", "go clean -cache", "go clean -modcache", "gem cleanup",
-        "pod cache clean", "conda clean", "mamba clean",
+        "xcrun simctl delete unavailable", "xcrun simctl runtime delete", "xcrun simctl erase",
+        "pip cache purge", "pip3 cache purge", "ollama rm ", "go clean -cache", "go clean -modcache",
+        "gem cleanup", "pod cache clean", "conda clean", "mamba clean",
     ]
 
     /// Why a path may not be touched, or nil when it may.
@@ -357,8 +397,10 @@ nonisolated enum CleanupGuard {
             return "Too broad: other apps keep live data here"
         }
         for dir in protected where p == dir || p.hasPrefix(dir + "/") {
-            // Projects live in Documents too; their build output is still fair game.
-            if !rebuildable.contains((p as NSString).lastPathComponent) || dir.hasSuffix(".Trash") {
+            // Projects live in Documents too; their build output is still fair
+            // game, and so are Codex's chat folders (the user decides those).
+            let allowed = rebuildable.contains((p as NSString).lastPathComponent) || codexChat(p) != nil
+            if !allowed || dir.hasSuffix(".Trash") {
                 return "In ~/\(dir.dropFirst(home.count + 1)), which BlitzTree never cleans"
             }
         }
@@ -379,11 +421,30 @@ nonisolated enum CleanupGuard {
         return nil
     }
 
+    /// The Codex app keeps each chat's files in ~/Documents/Codex/<date>/<chat>
+    /// (outputs, work). Returns that chat folder for a path at or inside one.
+    static func codexChat(_ path: String) -> String? {
+        let root = home + "/Documents/Codex/"
+        let p = (path as NSString).standardizingPath
+        guard p.hasPrefix(root) else { return nil }
+        let parts = p.dropFirst(root.count).split(separator: "/")
+        guard parts.count >= 2, parts[0].wholeMatch(of: /\d{4}-\d{2}-\d{2}/) != nil else { return nil }
+        return root + parts[0] + "/" + parts[1]
+    }
+
     /// Whether the project owning this build folder was used in the last two
     /// days: its git index (touched by every status, commit or checkout), the
-    /// project folder or the folder itself changed recently.
+    /// project folder or the folder itself changed recently. A Codex chat
+    /// counts as used when it started or Codex worked in it since (folder
+    /// dates are no help there: Finder's .DS_Store writes bump them).
     static func recentlyUsed(_ path: String, within: TimeInterval = 2 * 86400) -> Bool {
         let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-within)
+        if let chat = codexChat(path) {
+            let day = ((chat as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            if let started = try? Date(day + "T23:59:59Z", strategy: .iso8601), started > cutoff { return true }
+            return CodexSessions.lastActive(since: cutoff).keys.contains { $0 == chat || $0.hasPrefix(chat + "/") }
+        }
         let url = URL(fileURLWithPath: path)
         guard rebuildable.contains(url.lastPathComponent) else { return false }
         let project = url.deletingLastPathComponent()
@@ -400,7 +461,6 @@ nonisolated enum CleanupGuard {
                 stamps.append(URL(fileURLWithPath: dir, relativeTo: project).appendingPathComponent("index").path)
             }
         }
-        let cutoff = Date().addingTimeInterval(-within)
         return stamps.contains { p in
             ((try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date).map { $0 > cutoff } ?? false
         }
@@ -494,14 +554,15 @@ final class PlanItem: Identifiable {
             for path in asked {
                 if let why = CleanupGuard.blockReason(path: path) {
                     reason = reason ?? why
-                } else if let app = CleanupGuard.runningOwner(of: [path]) {
+                } else if CleanupGuard.codexChat(path) == nil, let app = CleanupGuard.runningOwner(of: [path]) {
                     reason = reason ?? "Quit \(app) to clean this"
                 } else if !FileManager.default.fileExists(atPath: path) {
                     reason = reason ?? "Already gone"
                 } else if CleanupGuard.recentlyUsed(path) {
                     // Never break what the user is working on right now.
                     recent += 1
-                    reason = reason ?? "In projects you used in the last 2 days"
+                    reason = reason ?? (CleanupGuard.codexChat(path) != nil
+                        ? "A Codex chat you used in the last 2 days" : "In projects you used in the last 2 days")
                 } else {
                     kept.append(path)
                 }
@@ -561,6 +622,7 @@ final class AgentRun {
             guard !Task.isCancelled else { return }
             let input = await Task.detached(priority: .userInitiated) {
                 AgentPrompt.build(tree: tree, scanRoot: scanRoot, known: known, running: running)
+                + AgentPrompt.appData(tree: tree)
             }.value
             // Closing or replacing a run while its prompt was being built
             // must not launch an agent after cancellation.
@@ -1193,9 +1255,10 @@ nonisolated enum AgentPrompt {
         cache, otherwise "trash" (BlitzTree moves the paths to the Trash itself). BlitzTree only runs \
         commands starting with one of: `uv cache clean`, `bun pm cache rm`, `npm cache clean --force`, \
         `pnpm store prune`, `yarn cache clean`, `brew cleanup --prune=all`, `docker system prune -f`, \
-        `docker builder prune -f`, `xcrun simctl delete unavailable`, `pip cache purge`, \
-        `ollama rm <model>`, `go clean -modcache`, `gem cleanup`, `pod cache clean --all`, \
-        `conda clean -a -y`. Nothing else, no pipes, `;`, `$` or globs; it must not prompt.
+        `docker builder prune -f`, `xcrun simctl delete unavailable`, `xcrun simctl runtime delete <id>`, \
+        `xcrun simctl erase <udid>`, `pip cache purge`, `ollama rm <model>`, `go clean -modcache`, \
+        `gem cleanup`, `pod cache clean --all`, `conda clean -a -y`. Nothing else, no pipes, `;`, `$` or \
+        globs; it must not prompt.
           - command: the exact command for "command", "" for "trash".
         `npm cache clean` only empties ~/.npm/_cacache; ~/.npm/_npx is a separate "trash" item. Only \
         list caches that appear in the tables above with their real size; skip ones that are not there.
@@ -1204,7 +1267,8 @@ nonisolated enum AgentPrompt {
         Never include: ~/Documents, ~/Desktop, ~/Pictures, the Photos library, ~/Movies, ~/Music, Mail, \
         Messages, iCloud Drive (~/Library/Mobile Documents), keychains, ~/.ssh, dotfile configs, source \
         code, git repositories themselves, or files of the running apps below. Build output inside \
-        projects (node_modules, target, .next, dist, DerivedData) is fine.
+        projects (node_modules, target, .next, dist, DerivedData) is fine, and so are the Codex chat \
+        folders and Xcode simulators listed at the end.
 
         ## Apps running now
         \(running.joined(separator: ", "))
@@ -1226,11 +1290,129 @@ nonisolated enum AgentPrompt {
         }
         return md
     }
+
+    /// Big folders the scan alone can't explain: Xcode's simulators (runtime
+    /// images live outside the home folder and go only through `simctl`) and
+    /// the Codex app's chat folders, which sit in the otherwise off-limits
+    /// ~/Documents. Listed with what the agent needs to plan them.
+    static func appData(tree: Tree) -> String {
+        // simctl and Codex's logs are independent: look them up side by side.
+        let sims = OutputText()
+        let done = DispatchGroup()
+        DispatchQueue.global(qos: .userInitiated).async(group: done) { sims.set(Data(simulators().utf8)) }
+        let chats = codexChats(tree: tree)
+        done.wait()
+        return sims.value + chats
+    }
+
+    private static func ago(_ date: Date?) -> String {
+        guard let date else { return "never" }
+        let days = Int(Date().timeIntervalSince(date) / 86400)
+        return days < 1 ? "today" : days == 1 ? "yesterday" : "\(days) days ago"
+    }
+
+    private static func simulators() -> String {
+        // Run simctl straight from the selected Xcode: /usr/bin/xcrun would
+        // offer to install the command line tools on a Mac without them.
+        let developer = AgentLocator.run("/usr/bin/xcode-select", ["-p"]).out
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let simctl = developer + "/usr/bin/simctl"
+        guard !developer.isEmpty, FileManager.default.isExecutableFile(atPath: simctl) else { return "" }
+        func json(_ args: [String]) -> [String: Any] {
+            let text = AgentLocator.run(simctl, args, timeout: 10).out
+            return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
+        }
+        func date(_ any: Any?) -> Date? { (any as? String).flatMap { try? Date($0, strategy: .iso8601) } }
+
+        var runtimes = ""
+        let images = json(["runtime", "list", "-j"]).values.compactMap { $0 as? [String: Any] }
+        for image in images.sorted(by: { ($0["sizeBytes"] as? Int64 ?? 0) > ($1["sizeBytes"] as? Int64 ?? 0) }) {
+            guard let id = image["identifier"] as? String, image["deletable"] as? Bool ?? true,
+                  let size = image["sizeBytes"] as? Int64, size >= 100_000_000 else { continue }
+            // "com.apple.CoreSimulator.SimRuntime.iOS-27-0" → "iOS"
+            let platform = (image["runtimeIdentifier"] as? String)?.split(separator: ".").last?
+                .split(separator: "-").first.map(String.init) ?? "Simulator"
+            let version = image["version"] as? String ?? ""
+            runtimes += "| \(Fmt.size(UInt64(size))) | \(platform) \(version) | \(ago(date(image["lastUsedAt"]))) "
+                + "| \(id) | \(image["path"] as? String ?? "") |\n"
+        }
+
+        var devices = ""
+        let byRuntime = json(["list", "devices", "-j"])["devices"] as? [String: Any] ?? [:]
+        let all = byRuntime.values.flatMap { $0 as? [[String: Any]] ?? [] }
+        for device in all.sorted(by: { ($0["dataPathSize"] as? Int64 ?? 0) > ($1["dataPathSize"] as? Int64 ?? 0) }) {
+            guard let udid = device["udid"] as? String, let data = device["dataPath"] as? String,
+                  let size = device["dataPathSize"] as? Int64, size >= 100_000_000 else { continue }
+            let folder = (data as NSString).deletingLastPathComponent
+            let state = device["state"] as? String ?? ""
+            devices += "| \(Fmt.size(UInt64(size))) | \(device["name"] as? String ?? "") (\(state)) "
+                + "| \(ago(date(device["lastUsedAt"]))) | \(udid) | \(folder) |\n"
+        }
+        guard !runtimes.isEmpty || !devices.isEmpty else { return "" }
+
+        var md = """
+
+        ## Xcode simulators
+
+        Simulator runtimes are system images Xcode downloads again when a simulator needs one. Plan \
+        each as its own item: action "command", command `xcrun simctl runtime delete <id>`, paths = \
+        [its path], group "safe" if unused for 30+ days, else "ask". Device data is one simulator's \
+        installed apps and files: action "command", command `xcrun simctl erase <udid>` (empties it, \
+        the device stays), paths = [its folder], group "ask". Never trash simulator folders directly.
+
+        """
+        if !runtimes.isEmpty {
+            md += "\n| Size | Runtime | Last used | Id | Path |\n|---:|---|---|---|---|\n" + runtimes
+        }
+        if !devices.isEmpty {
+            md += "\n| Size | Device | Last used | UDID | Folder |\n|---:|---|---|---|---|\n" + devices
+        }
+        return md
+    }
+
+    private static func codexChats(tree: Tree) -> String {
+        let root = NSHomeDirectory() + "/Documents/Codex"
+        guard let codex = tree.node(at: root) else { return "" }
+        var chats: [(node: Int, path: String)] = []
+        for day in tree.children(codex).map(Int.init) {
+            guard tree.alloc[day] >= 100_000_000 else { break }
+            let dayPath = root + "/" + tree.name(day)
+            for chat in tree.children(day).map(Int.init) {
+                guard tree.alloc[chat] >= 100_000_000 else { break }
+                let path = dayPath + "/" + tree.name(chat)
+                if tree.isDir(chat), CleanupGuard.codexChat(path) == path { chats.append((chat, path)) }
+            }
+        }
+        guard !chats.isEmpty else { return "" }
+        chats.sort { tree.alloc[$0.node] > tree.alloc[$1.node] }
+
+        var md = """
+
+        ## Codex chat folders
+
+        The Codex app keeps each chat's files in ~/Documents/Codex/<date>/<chat>: `outputs` holds what \
+        the chat produced (exports, downloads, renders), `work` its scratch files. Nothing recreates \
+        them, so group "ask", action "trash". One item per chat over 1 GB, titled from the chat name \
+        with its date in the detail; smaller ones may share one item. The chat folder or its \
+        `outputs`/`work` subfolders are valid paths. BlitzTree keeps chats used in the last 2 days.
+
+        | Size | Chat | Last used | Inside |
+        |---:|---|---|---|
+
+        """
+        let sessions = CodexSessions.lastActive()
+        for (node, path) in chats.prefix(40) {
+            let used = sessions.filter { $0.key == path || $0.key.hasPrefix(path + "/") }.values.max()
+            let inside = tree.children(node).prefix(3).map { "\(tree.name(Int($0))) \(Fmt.size(tree.alloc[Int($0)]))" }
+            md += "| \(Fmt.size(tree.alloc[node])) | \(path) | \(used.map(ago) ?? "unknown") | \(inside.joined(separator: ", ")) |\n"
+        }
+        return md
+    }
 }
 
 extension Tree {
     /// The node at an absolute path, if the scan covered it.
-    func node(at path: String) -> Int? {
+    nonisolated func node(at path: String) -> Int? {
         let root = self.path(0)
         var p = (path as NSString).standardizingPath
         // A whole-disk scan is rooted at the Data volume; /Users/… lives there.

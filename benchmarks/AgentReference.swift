@@ -269,9 +269,10 @@ nonisolated enum ReferenceAgentPrompt {
         cache, otherwise "trash" (BlitzTree moves the paths to the Trash itself). BlitzTree only runs \
         commands starting with one of: `uv cache clean`, `bun pm cache rm`, `npm cache clean --force`, \
         `pnpm store prune`, `yarn cache clean`, `brew cleanup --prune=all`, `docker system prune -f`, \
-        `docker builder prune -f`, `xcrun simctl delete unavailable`, `pip cache purge`, \
-        `ollama rm <model>`, `go clean -modcache`, `gem cleanup`, `pod cache clean --all`, \
-        `conda clean -a -y`. Nothing else, no pipes, `;`, `$` or globs; it must not prompt.
+        `docker builder prune -f`, `xcrun simctl delete unavailable`, `xcrun simctl runtime delete <id>`, \
+        `xcrun simctl erase <udid>`, `pip cache purge`, `ollama rm <model>`, `go clean -modcache`, \
+        `gem cleanup`, `pod cache clean --all`, `conda clean -a -y`. Nothing else, no pipes, `;`, `$` or \
+        globs; it must not prompt.
           - command: the exact command for "command", "" for "trash".
         `npm cache clean` only empties ~/.npm/_cacache; ~/.npm/_npx is a separate "trash" item. Only \
         list caches that appear in the tables above with their real size; skip ones that are not there.
@@ -280,7 +281,8 @@ nonisolated enum ReferenceAgentPrompt {
         Never include: ~/Documents, ~/Desktop, ~/Pictures, the Photos library, ~/Movies, ~/Music, Mail, \
         Messages, iCloud Drive (~/Library/Mobile Documents), keychains, ~/.ssh, dotfile configs, source \
         code, git repositories themselves, or files of the running apps below. Build output inside \
-        projects (node_modules, target, .next, dist, DerivedData) is fine.
+        projects (node_modules, target, .next, dist, DerivedData) is fine, and so are the Codex chat \
+        folders and Xcode simulators listed at the end.
 
         ## Apps running now
         \(running.joined(separator: ", "))
