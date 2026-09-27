@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5 — 2026-09-27
+
+- AI cleanup only runs when you click "Clean up with Claude Code" (or Codex). Before, the first scan after launch started your agent on its own, which sent folder paths and sizes to Anthropic or OpenAI without asking. Now the panel opens on the button and nothing leaves your Mac until you click it.
+
 ## 0.5.4 — 2026-09-27
 
 - AI cleanup: while "Delete for good" runs, the size counts down as each item finishes. Since deletes started running in parallel (0.4.1) the number disappeared until the whole delete was done.
