@@ -1,0 +1,2 @@
+rings_rounding,max_channel_delta,0,max_changed_byte_fraction,0.0
+PASS: 42 rings bitmap and geometry comparisons

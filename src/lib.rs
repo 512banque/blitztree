@@ -10,6 +10,7 @@ pub mod searchfs;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void, CString};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -79,7 +80,11 @@ pub struct Node {
     pub is_dir: bool,
     /// Subtree file count after aggregate().
     pub n_files: u32,
-    pub children: Vec<u32>,
+    /// Direct children occupy one contiguous arena batch, all after this
+    /// node. The arena lock covers the entire sibling append and publication
+    /// of this range. Files and unread/empty directories have an empty range;
+    /// the FFI conversion expands and sorts IDs in its own final buffer.
+    pub children: Range<u32>,
 }
 
 pub struct Scan {
@@ -339,6 +344,7 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
         let mut arena = shared.arena.lock().unwrap();
         let base = arena.len() as u32;
         let end = base + entries.len() as u32;
+        debug_assert!(dir_idx < base);
         arena.reserve(entries.len());
         for e in entries {
             arena.push(Node {
@@ -348,10 +354,11 @@ fn walk<'s>(scope: &rayon::Scope<'s>, shared: &'s Shared<'s>, dir_path: PathBuf,
                 alloc: e.alloc,
                 is_dir: e.is_dir,
                 n_files: 0,
-                children: Vec::new(),
+                children: 0..0,
             });
         }
-        arena[dir_idx as usize].children = (base..end).collect();
+        debug_assert_eq!(arena.len(), end as usize);
+        arena[dir_idx as usize].children = base..end;
         base
     };
 
@@ -399,7 +406,7 @@ pub fn scan(root: &Path, progress: &Progress) -> Scan {
         alloc: 0,
         is_dir: true,
         n_files: 0,
-        children: Vec::new(),
+        children: 0..0,
     }]);
     let shared = Shared {
         arena,
@@ -538,7 +545,7 @@ mod tests {
         assert_eq!(result.nodes.len(), 5, "directory symlinks are not followed");
         assert_eq!(result.nodes[0].n_files, 2);
         for (parent, node) in result.nodes.iter().enumerate() {
-            for &child in &node.children {
+            for child in node.children.clone() {
                 assert!(child as usize > parent);
                 assert_eq!(result.nodes[child as usize].parent as usize, parent);
             }
@@ -555,6 +562,51 @@ mod tests {
             .find(|node| &*node.name == "document-é")
             .unwrap();
         assert_eq!(file.size, 17);
+    }
+
+    #[test]
+    fn parallel_child_ranges_partition_wide_and_deep_tree() {
+        let root = std::env::temp_dir().join(format!("bz-ranges-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut deep = root.clone();
+        for depth in 1..=96 {
+            deep.push("d");
+            std::fs::create_dir(&deep).unwrap();
+            std::fs::write(deep.join("data"), vec![1u8; depth]).unwrap();
+        }
+        for width in 0..64 {
+            let dir = root.join(format!("wide-{width}"));
+            std::fs::create_dir_all(dir.join("empty")).unwrap();
+            std::fs::write(dir.join("data"), [1u8; 19]).unwrap();
+        }
+        let result = scan(&root, &Progress::default());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(result.errors, 0);
+        assert_eq!(result.nodes.len(), 385);
+        assert_eq!(result.nodes[0].n_files, 160);
+        assert_eq!(result.nodes[0].size, 5872);
+        let mut seen = vec![false; result.nodes.len()];
+        seen[0] = true;
+        for (parent, node) in result.nodes.iter().enumerate() {
+            if !node.is_dir {
+                assert!(node.children.is_empty());
+            }
+            for child in node.children.clone() {
+                let child = child as usize;
+                assert!(
+                    child > parent,
+                    "aggregation requires parent-before-child order"
+                );
+                assert!(!seen[child], "a child belongs to exactly one directory");
+                seen[child] = true;
+                assert_eq!(result.nodes[child].parent as usize, parent);
+            }
+        }
+        assert!(
+            seen.iter().all(|&visited| visited),
+            "every node is reachable"
+        );
     }
 
     #[test]

@@ -168,7 +168,7 @@ final class ScanModel {
     }
 
     func startAgent(_ agent: InstalledAgent) {
-        guard let tree, !scanning else { return }
+        guard let tree, !scanning, !cleanupTrash.running else { return }
         UserDefaults.standard.set(agent.kind.rawValue, forKey: "bz.agent")
         agentRun?.cancel()
         let run = AgentRun(agent: agent, env: agentEnv, tree: tree, scanRoot: scanRoot, known: cleanup) { [weak self] in
@@ -181,7 +181,8 @@ final class ScanModel {
     /// After the launch scan: start the agent straight away when one is ready,
     /// else open the panel on the setup offer.
     func autoStartIfReady() {
-        guard !autoStarted, agentEnv.loaded, tree != nil, !scanning, agentRun == nil else { return }
+        guard !autoStarted, agentEnv.loaded, tree != nil, !scanning,
+              !cleanupTrash.running, agentRun == nil else { return }
         autoStarted = true
         if let agent = preferredAgent {
             startAgent(agent)
@@ -218,6 +219,7 @@ final class ScanModel {
     var freeBytes: UInt64 = 0
     /// Rebuildable folders worth deleting, largest first.
     var cleanup: [CleanupItem] = []
+    let cleanupTrash = CleanupTrashBatch()
     /// Volume-used minus what the scan could see: root-only territory.
     var unscannedBytes: UInt64 = 0
     var showFreeSpace: Bool = UserDefaults.standard.bool(forKey: "bz.showFree") {
@@ -231,9 +233,10 @@ final class ScanModel {
     private var timer: Timer?
     private var startedAt: Date?
     private var activity: NSObjectProtocol?
+    private var volumeTask: Task<VolumeSpace, Never>?
 
     func startScan(path: String? = nil) {
-        if scanning { return }
+        if scanning || cleanupTrash.running { return }
         if let path { scanRoot = path }
         tree = nil
         cleanup = []
@@ -249,6 +252,11 @@ final class ScanModel {
             options: [.userInitiated, .latencyCritical],
             reason: "Disk scan"
         )
+        // Foundation may ask a disk-management service about purgeable space.
+        // Read it alongside the scan, before publishing the finished tree, so
+        // the main thread never waits synchronously on that service.
+        let volumePath = scanRoot
+        volumeTask = Task.detached(priority: .userInitiated) { VolumeSpace.read(volumePath) }
         handle = bz_scan_start(scanRoot)
 
         // 60 Hz: the elapsed time ticks every frame, so the screen keeps
@@ -266,7 +274,12 @@ final class ScanModel {
     private var maxPollGap: Double = 0
 
     private func poll() {
-        guard let handle else { return }
+        guard let handle else {
+            // A slow volume-space service must not freeze progress while the
+            // already finished tree waits for its matching volume snapshot.
+            if scanning { elapsed = -(startedAt?.timeIntervalSinceNow ?? 0) }
+            return
+        }
         if let last = lastPollAt { maxPollGap = max(maxPollGap, -last.timeIntervalSinceNow) }
         lastPollAt = Date()
         var f: UInt64 = 0, d: UInt64 = 0, b: UInt64 = 0
@@ -275,49 +288,71 @@ final class ScanModel {
         files = f; dirs = d; bytes = b
         elapsed = -(startedAt?.timeIntervalSinceNow ?? 0)
         if done != 0 {
-            timer?.invalidate()
-            timer = nil
             let doneAt = Date()
-            tree = Tree(handle: handle)
-            self.handle = nil // Tree owns it now
-            if tree != nil { hasShownTree = true }
-            if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
-                // When the main thread next gets a turn: the hand-off cost.
-                DispatchQueue.main.async {
-                    NSLog("BZ hand-off: main thread free %.1f ms after done", -doneAt.timeIntervalSinceNow * 1000)
-                }
-                NSLog("BZ done at %.3f, longest gap between polls %.1f ms", doneAt.timeIntervalSinceReferenceDate, maxPollGap * 1000)
+            let result = Tree(handle: handle)
+            self.handle = nil
+            if result == nil { bz_free(handle) }
+            let pendingVolume = volumeTask
+            volumeTask = nil
+            Task {
+                let space = await pendingVolume?.value ?? VolumeSpace(free: nil, used: nil)
+                finishScan(result, space: space, doneAt: doneAt)
             }
-            scanning = false
-            if let tree {
-                Task {
-                    let found = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
-                    // A rescan may have replaced the tree while discovery ran.
-                    // Node IDs only belong to the scan that produced them.
-                    guard self.tree === tree else { return }
-                    cleanup = found
-                    autoStartIfReady()
-                }
-                NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
-            }
-            if let vals = try? URL(fileURLWithPath: scanRoot).resourceValues(
-                forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-               let free = vals.volumeAvailableCapacityForImportantUsage {
-                freeBytes = UInt64(max(0, free))
-            }
-            // Coverage honesty: compare scanned bytes with what the volume
-            // says it holds. The difference is root-only space (Spotlight
-            // index, unified logs, …) no unelevated app can read.
-            unscannedBytes = 0
-            if scanRoot == "/System/Volumes/Data", let tree, let used = volumeUsedBytes(scanRoot) {
-                let seen = tree.alloc[0]
-                if used > seen {
-                    unscannedBytes = used - seen
-                }
-            }
-            if let activity { ProcessInfo.processInfo.endActivity(activity) }
-            activity = nil
         }
+    }
+
+    private func finishScan(_ result: Tree?, space: VolumeSpace, doneAt: Date) {
+        timer?.invalidate()
+        timer = nil
+        tree = result
+        if tree != nil { hasShownTree = true }
+        if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
+            // Queue latency includes awaiting metadata and UI updates; it is
+            // not a measurement of uninterrupted main-thread blocking.
+            DispatchQueue.main.async {
+                NSLog("BZ hand-off: queued completion %.1f ms after engine done", -doneAt.timeIntervalSinceNow * 1000)
+            }
+            NSLog("BZ done at %.3f, longest gap between polls %.1f ms", doneAt.timeIntervalSinceReferenceDate, maxPollGap * 1000)
+        }
+        scanning = false
+        if let tree {
+            Task {
+                let found = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
+                // A rescan may have replaced the tree while discovery ran.
+                // Node IDs only belong to the scan that produced them.
+                guard self.tree === tree else { return }
+                cleanup = found
+                autoStartIfReady()
+            }
+            NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
+        }
+        freeBytes = space.free ?? 0
+        // Coverage honesty: compare scanned bytes with what the volume
+        // says it holds. The difference is root-only space (Spotlight
+        // index, unified logs, …) no unelevated app can read.
+        unscannedBytes = 0
+        if let tree, let used = space.used {
+            let seen = tree.alloc[0]
+            if used > seen {
+                unscannedBytes = used - seen
+            }
+        }
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
+    }
+}
+
+nonisolated private struct VolumeSpace: Sendable {
+    let free: UInt64?
+    let used: UInt64?
+
+    static func read(_ path: String) -> VolumeSpace {
+        let values = try? URL(fileURLWithPath: path).resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return VolumeSpace(
+            free: values?.volumeAvailableCapacityForImportantUsage.map { UInt64(max(0, $0)) },
+            used: path == "/System/Volumes/Data" ? volumeUsedBytes(path) : nil
+        )
     }
 }
 

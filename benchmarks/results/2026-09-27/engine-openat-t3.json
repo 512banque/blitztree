@@ -1,0 +1,149 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "cpus": 10,
+  "path": "~/.t3",
+  "mode": "ffi",
+  "threads": null,
+  "binary_sha256": {
+    "baseline": "a3d8e2724c2a0debf8758574181db359f080a496f2657149968385c870b9b926",
+    "candidate": "cb31f27f83965ec8d829dc469ce20409ebd41d1767849a0cc81bd9d923ea6496"
+  },
+  "summary": {
+    "baseline": {
+      "median_seconds": 0.096458542,
+      "min_seconds": 0.093370708,
+      "max_seconds": 0.140403167,
+      "median_peak_footprint_bytes": 16794008
+    },
+    "candidate": {
+      "median_seconds": 0.094680375,
+      "min_seconds": 0.092818291,
+      "max_seconds": 0.097203042,
+      "median_peak_footprint_bytes": 15237528
+    },
+    "speedup": 1.018780734655941,
+    "all_totals_identical": true
+  },
+  "measurements": [
+    {
+      "pair": 1,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.140403167,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17907712,
+      "peak_footprint_bytes": 17121688
+    },
+    {
+      "pair": 1,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.097203042,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17711104,
+      "peak_footprint_bytes": 16941464
+    },
+    {
+      "pair": 2,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.092818291,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 15941632,
+      "peak_footprint_bytes": 15171992
+    },
+    {
+      "pair": 2,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.093370708,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17465344,
+      "peak_footprint_bytes": 16679320
+    },
+    {
+      "pair": 3,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.094785958,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17596416,
+      "peak_footprint_bytes": 16810392
+    },
+    {
+      "pair": 3,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.094680375,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 15613952,
+      "peak_footprint_bytes": 14844312
+    },
+    {
+      "pair": 4,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.094668458,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17547264,
+      "peak_footprint_bytes": 16777624
+    },
+    {
+      "pair": 4,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.096458542,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17580032,
+      "peak_footprint_bytes": 16794008
+    },
+    {
+      "pair": 5,
+      "build": "baseline",
+      "mode": "ffi",
+      "seconds": 0.096837625,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 17268736,
+      "peak_footprint_bytes": 16482712
+    },
+    {
+      "pair": 5,
+      "build": "candidate",
+      "mode": "ffi",
+      "seconds": 0.095283458,
+      "files": 71144,
+      "dirs": 7350,
+      "bytes": 4304605184,
+      "errors": 0,
+      "max_rss_bytes": 16007168,
+      "peak_footprint_bytes": 15237528
+    }
+  ]
+}

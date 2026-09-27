@@ -1,0 +1,28 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling blitztree v0.5.0 (/Users/benchmark/.codex/worktrees/6869/blitztree)
+    Finished `release` profile [optimized] target(s) in 17.06s
+     Running unittests src/lib.rs (target/release/deps/blitztree-6200d86cfdacba7e)
+
+running 6 tests
+test ffi::tests::flatten_benchmark ... ignored, isolated performance measurement; run in release with --nocapture
+test tests::bulk_parser_preserves_cloud_mount_and_hardlink_metadata ... ok
+test ffi::tests::flatten_preserves_every_abi_column_and_child_order ... ok
+test tests::scan_preserves_parent_links_empty_dirs_and_symlinks ... ok
+test tests::hardlinks_count_once ... ok
+test tests::parallel_child_ranges_partition_wide_and_deep_tree ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/bin/bench.rs (target/release/deps/bench-cc3eeac528b9687e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests blitztree
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

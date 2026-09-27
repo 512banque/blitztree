@@ -52,7 +52,7 @@ fn build_flat(s: crate::Scan) -> Flat {
         n_files.push(node.n_files);
         flags.push(node.is_dir as u8);
 
-        children.extend_from_slice(&node.children);
+        children.extend(node.children);
         child_off.push(children.len() as u32);
 
         name_blob.extend_from_slice(node.name.as_bytes());
@@ -196,7 +196,7 @@ mod tests {
             alloc: 0,
             is_dir: true,
             n_files: 0,
-            children: (1..=dirs as u32).collect(),
+            children: 1..dirs as u32 + 1,
         }];
         for dir in 0..dirs {
             let start = (dirs + 1 + dir * files_per_dir) as u32;
@@ -207,7 +207,7 @@ mod tests {
                 alloc: 0,
                 is_dir: true,
                 n_files: 0,
-                children: (start..start + files_per_dir as u32).collect(),
+                children: start..start + files_per_dir as u32,
             });
         }
         for dir in 0..dirs {
@@ -220,7 +220,7 @@ mod tests {
                     alloc: size.div_ceil(4096) * 4096,
                     is_dir: false,
                     n_files: 0,
-                    children: Vec::new(),
+                    children: 0..0,
                 });
             }
         }
@@ -252,7 +252,7 @@ mod tests {
             flat.logical.push(node.size);
             flat.n_files.push(node.n_files);
             flat.flags.push(node.is_dir as u8);
-            let mut kids = node.children.clone();
+            let mut kids: Vec<_> = node.children.clone().collect();
             kids.sort_unstable_by_key(|&c| std::cmp::Reverse(s.nodes[c as usize].alloc));
             flat.children.extend_from_slice(&kids);
             flat.child_off.push(flat.children.len() as u32);

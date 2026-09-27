@@ -1,0 +1,4 @@
+ec8d676a6be6b4c21b03598c3e3d4db80f78934e3141e53cc52c3c2505279391  app/Agent.swift
+82a7f9eb451ada012eb0cae4b31cef4ecca80a3f7c1759d560fadc793b397000  app/Cleanup.swift
+d8676bcec88f2eece78ad803fb4b38d41bd8ae41df81aae622fd57e1ce2391bf  app/Model.swift
+PASS: incremental parser split parity; JSONL event/write parity (both agents); prompt byte equality; cancellation prevents launch; trash batch stays off-main, rejects duplicate starts, retains failures until dismissed, completes once

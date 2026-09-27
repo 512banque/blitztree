@@ -33,7 +33,7 @@ fn main() {
             let result = scan(&path, &progress);
             let root = &result.nodes[0];
             if std::env::var_os("BZ_TOP").is_some() {
-                for &c in &root.children {
+                for c in root.children.clone() {
                     let n = &result.nodes[c as usize];
                     eprintln!("TOP\t{}\t{}", n.name, n.alloc);
                 }

@@ -1,0 +1,49 @@
+2026-09-27 02:21:48.025 ui-handoff-final[91030:241853] BZ trial 0 begin
+[bz] scan 0.56s  flatten 0.01s
+2026-09-27 02:21:48.612 ui-handoff-final[91030:241853] BZ done at 812182908.612, longest gap between polls 17.7 ms
+2026-09-27 02:21:48.612 ui-handoff-final[91030:241853] BZ scan done: 332019 nodes, 0 unreadable dirs
+2026-09-27 02:21:48.612 ui-handoff-final[91030:241853] BZ completion reached: 0.514 ms
+2026-09-27 02:21:48.637 ui-handoff-final[91030:241853] BZ render 1698x1704: 165688 steps, layout 16.7 ms, paint 7.0 ms (30 bands)
+2026-09-27 02:21:48.640 ui-handoff-final[91030:241853] BZ list reload: 0.2 ms
+2026-09-27 02:21:48.742 ui-handoff-final[91030:241853] BZ hand-off: queued completion 130.3 ms after engine done
+2026-09-27 02:21:48.742 ui-handoff-final[91030:241853] BZ visible handoff: 130.366 ms
+2026-09-27 02:21:48.742 ui-handoff-final[91030:241853] BZ verified 147 visible cells
+2026-09-27 02:21:48.742 ui-handoff-final[91030:241853] BZ trial 0 visible nodes=332019
+2026-09-27 02:21:49.499 ui-handoff-final[91030:241853] BZ trial 0 root body evaluations=3
+2026-09-27 02:21:49.499 ui-handoff-final[91030:241853] BZ trial 1 begin
+[bz] scan 0.57s  flatten 0.01s
+2026-09-27 02:21:50.101 ui-handoff-final[91030:241853] BZ done at 812182910.101, longest gap between polls 17.5 ms
+2026-09-27 02:21:50.101 ui-handoff-final[91030:241853] BZ scan done: 332019 nodes, 0 unreadable dirs
+2026-09-27 02:21:50.102 ui-handoff-final[91030:241853] BZ completion reached: 0.870 ms
+2026-09-27 02:21:50.127 ui-handoff-final[91030:241853] BZ render 1698x1704: 165688 steps, layout 16.5 ms, paint 7.3 ms (30 bands)
+2026-09-27 02:21:50.130 ui-handoff-final[91030:241853] BZ list reload: 0.7 ms
+2026-09-27 02:21:50.148 ui-handoff-final[91030:241853] BZ hand-off: queued completion 47.8 ms after engine done
+2026-09-27 02:21:50.148 ui-handoff-final[91030:241853] BZ visible handoff: 47.796 ms
+2026-09-27 02:21:50.149 ui-handoff-final[91030:241853] BZ verified 147 visible cells
+2026-09-27 02:21:50.149 ui-handoff-final[91030:241853] BZ trial 1 visible nodes=332019
+2026-09-27 02:21:50.910 ui-handoff-final[91030:241853] BZ trial 1 root body evaluations=2
+2026-09-27 02:21:50.910 ui-handoff-final[91030:241853] BZ trial 2 begin
+[bz] scan 0.54s  flatten 0.01s
+2026-09-27 02:21:51.462 ui-handoff-final[91030:241853] BZ done at 812182911.462, longest gap between polls 18.1 ms
+2026-09-27 02:21:51.462 ui-handoff-final[91030:241853] BZ scan done: 332019 nodes, 0 unreadable dirs
+2026-09-27 02:21:51.462 ui-handoff-final[91030:241853] BZ completion reached: 0.788 ms
+2026-09-27 02:21:51.488 ui-handoff-final[91030:241853] BZ render 1698x1704: 165688 steps, layout 14.6 ms, paint 6.7 ms (30 bands)
+2026-09-27 02:21:51.491 ui-handoff-final[91030:241853] BZ list reload: 0.7 ms
+2026-09-27 02:21:51.496 ui-handoff-final[91030:241853] BZ visible handoff: 34.702 ms
+2026-09-27 02:21:51.496 ui-handoff-final[91030:241853] BZ verified 147 visible cells
+2026-09-27 02:21:51.496 ui-handoff-final[91030:241853] BZ trial 2 visible nodes=332019
+2026-09-27 02:21:51.506 ui-handoff-final[91030:241853] BZ hand-off: queued completion 44.3 ms after engine done
+2026-09-27 02:21:52.293 ui-handoff-final[91030:241853] BZ trial 2 root body evaluations=2
+2026-09-27 02:21:52.293 ui-handoff-final[91030:241853] BZ trial 3 begin
+[bz] scan 0.60s  flatten 0.01s
+2026-09-27 02:21:52.911 ui-handoff-final[91030:241853] BZ done at 812182912.911, longest gap between polls 18.3 ms
+2026-09-27 02:21:52.911 ui-handoff-final[91030:241853] BZ scan done: 332019 nodes, 0 unreadable dirs
+2026-09-27 02:21:52.911 ui-handoff-final[91030:241853] BZ completion reached: 0.583 ms
+2026-09-27 02:21:52.935 ui-handoff-final[91030:241853] BZ render 1698x1704: 165688 steps, layout 15.3 ms, paint 7.2 ms (30 bands)
+2026-09-27 02:21:52.938 ui-handoff-final[91030:241853] BZ list reload: 0.7 ms
+2026-09-27 02:21:52.958 ui-handoff-final[91030:241853] BZ hand-off: queued completion 47.8 ms after engine done
+2026-09-27 02:21:52.958 ui-handoff-final[91030:241853] BZ visible handoff: 47.826 ms
+2026-09-27 02:21:52.958 ui-handoff-final[91030:241853] BZ verified 147 visible cells
+2026-09-27 02:21:52.958 ui-handoff-final[91030:241853] BZ trial 3 visible nodes=332019
+2026-09-27 02:21:53.713 ui-handoff-final[91030:241853] BZ trial 3 root body evaluations=2
+2026-09-27 02:21:55.891 ui-handoff-final[91030:241853] BZ hover 120 updates: root body evaluations=0

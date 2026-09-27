@@ -1,0 +1,23 @@
+pixel-diff,rings balanced 480.0x320.0 free=false,bytes,1417,max_delta,3,mean_delta,1.0374029640084685,histogram,[(key: 1, value: 1367), (key: 2, value: 47), (key: 3, value: 3)]
+pixel-diff,rings balanced 480.0x320.0 free=true,bytes,955,max_delta,2,mean_delta,1.0261780104712042,histogram,[(key: 1, value: 930), (key: 2, value: 25)]
+pixel-diff,rings balanced 1024.25x700.75 free=false,bytes,10492,max_delta,4,mean_delta,1.0851124666412504,histogram,[(key: 1, value: 9740), (key: 2, value: 625), (key: 3, value: 113), (key: 4, value: 14)]
+pixel-diff,rings balanced 1024.25x700.75 free=true,bytes,4434,max_delta,5,mean_delta,1.0730717185385656,histogram,[(key: 1, value: 4142), (key: 2, value: 267), (key: 3, value: 19), (key: 4, value: 5), (key: 5, value: 1)]
+pixel-diff,rings balanced 1440.0x900.0 free=false,bytes,17908,max_delta,5,mean_delta,1.1048134911771275,histogram,[(key: 1, value: 16369), (key: 2, value: 1250), (key: 3, value: 244), (key: 4, value: 41), (key: 5, value: 4)]
+pixel-diff,rings balanced 1440.0x900.0 free=true,bytes,10550,max_delta,5,mean_delta,1.1223696682464455,histogram,[(key: 1, value: 9543), (key: 2, value: 770), (key: 3, value: 193), (key: 4, value: 41), (key: 5, value: 3)]
+pixel-diff,rings skewed 480.0x320.0 free=false,bytes,1298,max_delta,3,mean_delta,1.0254237288135593,histogram,[(key: 1, value: 1266), (key: 2, value: 31), (key: 3, value: 1)]
+pixel-diff,rings skewed 480.0x320.0 free=true,bytes,1427,max_delta,3,mean_delta,1.020322354590049,histogram,[(key: 1, value: 1399), (key: 2, value: 27), (key: 3, value: 1)]
+pixel-diff,rings skewed 1024.25x700.75 free=false,bytes,11151,max_delta,4,mean_delta,1.063671419603623,histogram,[(key: 1, value: 10512), (key: 2, value: 571), (key: 3, value: 65), (key: 4, value: 3)]
+pixel-diff,rings skewed 1024.25x700.75 free=true,bytes,5094,max_delta,4,mean_delta,1.0969768354927365,histogram,[(key: 1, value: 4690), (key: 2, value: 324), (key: 3, value: 70), (key: 4, value: 10)]
+pixel-diff,rings skewed 1440.0x900.0 free=false,bytes,18642,max_delta,4,mean_delta,1.121017058255552,histogram,[(key: 1, value: 16699), (key: 2, value: 1667), (key: 3, value: 239), (key: 4, value: 37)]
+pixel-diff,rings skewed 1440.0x900.0 free=true,bytes,10507,max_delta,5,mean_delta,1.0976491862567812,histogram,[(key: 1, value: 9688), (key: 2, value: 653), (key: 3, value: 131), (key: 4, value: 29), (key: 5, value: 6)]
+rings_rounding,max_channel_delta,5,max_changed_byte_fraction,0.0009671252019072254
+PASS: 42 rings bitmap and geometry comparisons
+rings_balanced,93.119,49.665,1.87x
+samples,rings_balanced,baseline,92.807,93.271,91.990,93.119,92.932,91.789,96.741,94.687,98.876
+samples,rings_balanced,optimized,49.665,48.397,71.278,56.160,48.183,48.221,52.404,50.404,49.228
+rings_deep,60.743,60.090,1.01x
+samples,rings_deep,baseline,64.529,60.791,59.730,59.386,60.743,62.748,60.088,59.634,63.792
+samples,rings_deep,optimized,62.567,60.920,62.817,61.724,59.420,60.090,59.075,58.708,59.434
+rings_flat,4.802,4.856,0.99x
+samples,rings_flat,baseline,5.291,4.812,4.759,5.134,4.802,4.701,4.637,4.882,4.754
+samples,rings_flat,optimized,5.073,4.713,4.936,4.758,4.831,4.647,4.883,5.051,4.856

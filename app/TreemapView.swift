@@ -134,9 +134,11 @@ final class TreemapNSView: NSView {
         let bands = max(1, min(ProcessInfo.processInfo.activeProcessorCount * 3, ph / 32))
         ops.withUnsafeBufferPointer { ops in
             pixels.withUnsafeMutableBufferPointer { buf in
+                // concurrentPerform joins before either borrowed buffer ends.
+                nonisolated(unsafe) let operations = ops
                 nonisolated(unsafe) let base = buf.baseAddress!
                 DispatchQueue.concurrentPerform(iterations: bands) { band in
-                    Self.paint(ops, base: base, pw: pw, ph: ph,
+                    Self.paint(operations, base: base, pw: pw, ph: ph,
                                rows: (ph * band / bands)..<(ph * (band + 1) / bands))
                 }
             }
@@ -642,5 +644,9 @@ struct TreemapView: NSViewRepresentable {
             view.highlights = lit
             view.needsDisplay = true
         }
+        // Observe list selections even when surrounding status UI updates
+        // independently; the overlay redraw does not rebuild the bitmap.
+        _ = model.selection
+        view.needsDisplay = true
     }
 }

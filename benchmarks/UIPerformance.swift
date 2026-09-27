@@ -149,7 +149,44 @@ struct UIPerformance {
         let selected = coordinator.roots.first { $0.id == 1 }!
         check((outline.item(atRow: outline.selectedRow) as? OutlinePanel.Item)?.id == 1, "Selection failed")
         check(childrenAreUnmaterialized(selected), "Selecting collapsed folder allocated its descendants")
-        print("PASS: cleanup differential/expected matches; outline count and collapsed selection remain lazy")
+        // Refreshing an untouched root with the same shape reuses its row
+        // identity, even when Rust assigns different node IDs on the rescan.
+        var oldRows = Fixture()
+        let oldFolder = oldRows.add("folder")
+        oldRows.add("old-child", to: oldFolder, bytes: 1_000, directory: false)
+        oldRows.add("small", bytes: 100, directory: false)
+        model.tree = oldRows.tree(); model.selection = nil
+        coordinator.rebuildIfNeeded()
+        let originalRow = coordinator.roots[0]
+        var newRows = Fixture()
+        newRows.add("small", bytes: 150, directory: false)
+        let newFolder = newRows.add("folder")
+        newRows.add("new-child", to: newFolder, bytes: 2_000, directory: false)
+        let replacementTree = newRows.tree()
+        model.tree = replacementTree
+        coordinator.rebuildIfNeeded()
+        check(coordinator.roots[0] === originalRow, "Same-shape rescan discarded row identity")
+        check(originalRow.id == newFolder && originalRow.tree === replacementTree, "Reused row kept a stale node")
+        check(outline.selectedRow == -1, "Rescan preserved old selection")
+        outline.expandItem(originalRow)
+        check(outline.numberOfRows == 3, "Reused outline cached the wrong child count")
+        let child = outline.item(atRow: 1) as! OutlinePanel.Item
+        check(child.tree === replacementTree && child.tree.name(child.id) == "new-child", "Expanding reused row revealed an old tree")
+        outline.collapseItem(originalRow)
+        model.tree = newRows.tree()
+        coordinator.rebuildIfNeeded()
+        check(coordinator.roots[0] !== originalRow, "Materialized children must invalidate reused roots")
+        let priorRow = coordinator.roots[0]
+        newRows.add("another-child", to: newFolder, bytes: 20, directory: false)
+        model.tree = newRows.tree()
+        coordinator.rebuildIfNeeded()
+        check(coordinator.roots[0] !== priorRow, "Changed child count reused cached outline shape")
+        let renamedRow = coordinator.roots[0]
+        newRows.names[newFolder] = "renamed"
+        model.tree = newRows.tree()
+        coordinator.rebuildIfNeeded()
+        check(coordinator.roots[0] !== renamedRow, "Renamed root reused stale outline identity")
+        print("PASS: cleanup parity; lazy outline children; rescan row reuse, new IDs, expansion, and shape invalidation")
         guard !CommandLine.arguments.contains("--check-only") else { return }
 
         let hasFDA = FDA.isActive()

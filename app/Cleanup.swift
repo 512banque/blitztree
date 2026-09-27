@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Observation
 
 /// A folder that is safe to delete because a tool rebuilds or re-downloads
 /// it on demand: package installs, build output, caches.
@@ -91,13 +92,46 @@ nonisolated enum Cleanup {
     }
 }
 
+/// A manual cleanup batch keeps file coordination off the main actor and
+/// prevents repeated clicks from moving the same captured selection twice.
+@Observable
+@MainActor
+final class CleanupTrashBatch {
+    private(set) var running = false
+    /// Keep errors when the inspector closes during a background batch.
+    private(set) var failures: [String] = []
+
+    func clearFailures() { failures = [] }
+
+    @discardableResult
+    func start(_ items: [CleanupItem], completion: @escaping ([String]) -> Void) -> Task<Void, Never>? {
+        guard !running else { return nil }
+        running = true
+        return Task {
+            let failed = await Task.detached(priority: .userInitiated) {
+                var failed: [String] = []
+                for item in items {
+                    do {
+                        try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
+                    } catch {
+                        failed.append("\(item.display): \(error.localizedDescription)")
+                    }
+                }
+                return failed
+            }.value
+            failures.append(contentsOf: failed)
+            running = false
+            completion(failed)
+        }
+    }
+}
+
 /// Right-hand inspector: what can be reclaimed, pick, trash, rescan. While an
 /// agent cleanup is on screen, the whole panel is that run.
 struct CleanupPanel: View {
     let model: ScanModel
     @State private var picked: Set<Int> = []
     @State private var confirming = false
-    @State private var failures: [String] = []
 
     private var agent: InstalledAgent? { model.preferredAgent }
 
@@ -124,10 +158,10 @@ struct CleanupPanel: View {
         } message: {
             Text("You can put them back from the Trash until you empty it. The tools that made them rebuild them when needed.")
         }
-        .alert("Some folders couldn't be moved", isPresented: .constant(!failures.isEmpty)) {
-            Button("OK") { failures = [] }
+        .alert("Some folders couldn't be moved", isPresented: .constant(!model.cleanupTrash.failures.isEmpty)) {
+            Button("OK") { model.cleanupTrash.clearFailures() }
         } message: {
-            Text(failures.joined(separator: "\n"))
+            Text(model.cleanupTrash.failures.joined(separator: "\n"))
         }
     }
 
@@ -174,10 +208,12 @@ struct CleanupPanel: View {
                 }
             }
             .listStyle(.inset)
+            .disabled(model.cleanupTrash.running)
 
             Divider()
             VStack(spacing: 8) {
                 agentButton
+                    .disabled(model.cleanupTrash.running)
                 Button {
                     confirming = true
                 } label: {
@@ -187,7 +223,7 @@ struct CleanupPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(picked.isEmpty || model.scanning)
+                .disabled(picked.isEmpty || model.scanning || model.cleanupTrash.running)
             }
             .padding(12)
         }
@@ -269,19 +305,13 @@ struct CleanupPanel: View {
     }
 
     private func trashPicked() {
-        var failed: [String] = []
-        for item in pickedItems {
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
-            } catch {
-                failed.append("\(item.display): \(error.localizedDescription)")
-            }
+        model.cleanupTrash.start(pickedItems) { _ in
+            picked = []
+            // The batch clears its busy state before this final rescan.
+            model.startScan()
         }
-        picked = []
-        failures = failed
-        // Rescan so every size on screen matches the disk again.
-        model.startScan()
     }
+
 }
 
 // MARK: - Agent run

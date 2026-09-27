@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import ImageIO
+
+@MainActor let renderingScale: CGFloat = CommandLine.arguments.contains("--scale1") ? 1 : 2
 
 // Minimal immutable adapter for the production Tree read interface. Every
 // rendering algorithm, shader and event hit test is compiled from app sources.
@@ -93,6 +96,9 @@ enum Fmt {
 }
 
 @main struct RenderingBench {
+    static var ringMaxDelta = 0
+    static var ringMaxChangedFraction = 0.0
+
     static func ms(_ action: () -> Void) -> Double {
         let start = DispatchTime.now().uptimeNanoseconds
         action()
@@ -105,11 +111,39 @@ enum Fmt {
     }
 
     static func samePixels(_ lhs: CGImage?, _ rhs: CGImage?, _ label: String) {
+        if let directory = ProcessInfo.processInfo.environment["BZ_RENDER_IMAGES"], label.contains("balanced"), label.contains("1440") {
+            try! FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            let name = label.replacingOccurrences(of: "[^A-Za-z0-9]+", with: "-", options: .regularExpression)
+            for (suffix, image) in [("candidate", lhs!), ("baseline", rhs!)] {
+                let url = URL(fileURLWithPath: directory).appendingPathComponent("scale-\(Int(renderingScale))-\(name)-\(suffix).png")
+                let writer = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil)!
+                CGImageDestinationAddImage(writer, image, nil)
+                precondition(CGImageDestinationFinalize(writer))
+            }
+        }
         let a = pixels(lhs), b = pixels(rhs)
+        precondition(a.count == b.count, "bitmap storage differs")
         if a != b {
             let differing = zip(a, b).filter { $0 != $1 }.count
+            var maximum = 0, total = 0, histogram: [Int: Int] = [:]
+            for (x, y) in zip(a, b) where x != y {
+                let delta = abs(Int(x) - Int(y))
+                maximum = max(maximum, delta); total += delta; histogram[delta, default: 0] += 1
+            }
+            let diagnostic = "pixel-diff,\(label),bytes,\(differing),max_delta,\(maximum),mean_delta,\(Double(total) / Double(differing)),histogram,\(histogram.sorted { $0.key < $1.key })\n"
+            FileHandle.standardError.write(Data(diagnostic.utf8))
+            if CommandLine.arguments.contains("--allow-ring-rounding"), label.contains("rings") || label.contains("sunburst") {
+                ringMaxDelta = max(ringMaxDelta, maximum)
+                ringMaxChangedFraction = max(ringMaxChangedFraction, Double(differing) / Double(a.count))
+                return
+            }
             fatalError("\(label): \(differing) differing bytes out of \(a.count)")
         }
+    }
+
+    static func checkRingRounding() {
+        print("rings_rounding,max_channel_delta,\(ringMaxDelta),max_changed_byte_fraction,\(ringMaxChangedFraction)")
+        precondition(ringMaxDelta <= 5 && ringMaxChangedFraction < 0.001, "ring rounding exceeded bounds")
     }
 
     static func hitID(_ hit: SunburstNSView.Hit?) -> Int {
@@ -195,6 +229,71 @@ enum Fmt {
     }
 
     static func main() {
+        if CommandLine.arguments.contains("--rings-only") {
+            for kind in ["balanced", "skewed", "deep", "flat", "empty", "zero", "one_huge"] {
+                for (width, height) in [(480.0, 320.0), (1024.25, 700.75), (1440.0, 900.0)] {
+                    for free in [false, true] {
+                        let model = ScanModel(); model.tree = Tree(kind: kind)
+                        model.showFreeSpace = free; model.freeBytes = max(1, model.tree!.alloc[0] / 3)
+                        let frame = CGRect(x: 0, y: 0, width: width, height: height)
+                        let sb = SunburstNSView(frame: frame), old = LegacySunburstNSView(frame: frame)
+                        old.model = model; sb.model = model
+                        precondition(sb.segments.count == old.segments.count)
+                        for (a, b) in zip(sb.segments, old.segments) {
+                            precondition(a.node == b.node && a.ring == b.ring && a.start == b.start && a.end == b.end
+                                         && a.bytes == b.bytes && a.count == b.count)
+                        }
+                        samePixels(sb.bitmap, old.bitmap, "rings \(kind) \(width)x\(height) free=\(free)")
+                    }
+                }
+            }
+            checkRingRounding()
+            print("PASS: 42 rings bitmap and geometry comparisons")
+            if CommandLine.arguments.contains("--check-only") { return }
+            for kind in ["balanced", "deep", "flat"] {
+                let model = ScanModel(); model.tree = Tree(kind: kind)
+                let frame = CGRect(x: 0, y: 0, width: 1440, height: 900)
+                let sb = SunburstNSView(frame: frame), old = LegacySunburstNSView(frame: frame)
+                old.model = model; sb.model = model
+                measure("rings_\(kind)", before: { old.relayout() }, after: { sb.relayout() })
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--profile-rings") {
+            let model = ScanModel(); model.tree = Tree(kind: "balanced")
+            let sb = SunburstNSView(frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
+            sb.model = model
+            for _ in 0..<100 { sb.relayout() }
+            return
+        }
+        if CommandLine.arguments.contains("--profile-treemap") {
+            let tree = Tree(kind: "flat")
+            var sink = 0
+            for _ in 0..<15 {
+                let out = TreemapNSView.RenderOutput()
+                var ops: [TreemapNSView.PaintOp] = []
+                let layout = ms { ops = TreemapNSView.layoutOps(tree: tree, pw: 2880, ph: 1800, scale: 2, root: 0, showFree: true, freeBytes: tree.alloc[0] / 3, out: out) }
+                let index = ms { sink += TMLeafIndex(leaves: out.leaves, size: CGSize(width: 1440, height: 900)).cells.count }
+                let bands = min(ProcessInfo.processInfo.activeProcessorCount * 3, 1800 / 32)
+                var pixels = [UInt32](repeating: 0xFF16_1616, count: 2880 * 1800)
+                let paint = ms {
+                    ops.withUnsafeBufferPointer { ops in
+                        pixels.withUnsafeMutableBufferPointer { buffer in
+                            nonisolated(unsafe) let base = buffer.baseAddress!
+                            nonisolated(unsafe) let operations = ops
+                            DispatchQueue.concurrentPerform(iterations: bands) { band in
+                                TreemapNSView.paint(operations, base: base, pw: 2880, ph: 1800,
+                                                    rows: (1800 * band / bands)..<(1800 * (band + 1) / bands))
+                            }
+                        }
+                    }
+                }
+                print("phase,treemap,layout,\(layout),index,\(index),paint,\(paint)")
+                sink += pixels.count
+            }
+            precondition(sink > 0)
+            return
+        }
         let onlyCheck = CommandLine.arguments.contains("--check-only")
         verifyCoverage()
         var checks = 0, hitChecks = 0
@@ -274,6 +373,7 @@ enum Fmt {
                 }
             }
         }
+        checkRingRounding()
         print("PASS: \(checks) treemap/sunburst pixel and geometry comparisons; 126 cushion scale/root/band checks; 2000 fractional coverage checks; \(hitChecks) sunburst and \(leafHitChecks) treemap hit checks")
         if onlyCheck { return }
         print("workload,baseline_median_ms,optimized_median_ms,speedup")

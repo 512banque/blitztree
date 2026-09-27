@@ -1,0 +1,50 @@
+d17e15abda5a55ebd167d82de1ecbdd49e176d1b757d2104266bc9652ed91b03  /tmp/blitztree-ui-bench.JzZPRy/app/Cleanup.swift
+d8676bcec88f2eece78ad803fb4b38d41bd8ae41df81aae622fd57e1ce2391bf  /tmp/blitztree-ui-bench.JzZPRy/app/Model.swift
+0b741108eec19f7cfa9c102a7403eea0e25376942910b47e472785d1af2f31b5  /tmp/blitztree-ui-bench.JzZPRy/app/ContentView.swift
+/tmp/blitztree-ui-bench.JzZPRy/app/TreemapView.swift:142:36: warning: capture of 'ops' with non-Sendable type 'UnsafeBufferPointer<TreemapNSView.PaintOp>' in a '@Sendable' closure [#SendableClosureCaptures]
+140 |                     let rows = (ph * band / bands)..<(ph * (band + 1) / bands)
+141 |                     if paintBands.isEmpty {
+142 |                         Self.paint(ops, base: base, pw: pw, ph: ph, rows: rows)
+    |                                    `- warning: capture of 'ops' with non-Sendable type 'UnsafeBufferPointer<TreemapNSView.PaintOp>' in a '@Sendable' closure [#SendableClosureCaptures]
+143 |                     } else {
+144 |                         paintBands[band].withUnsafeBufferPointer {
+
+Swift.UnsafeBufferPointer:1:23: note: generic struct 'UnsafeBufferPointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeBufferPointer<Element> : Copyable where Element : ~Copyable {
+  |                       `- note: generic struct 'UnsafeBufferPointer' does not conform to the 'Sendable' protocol
+2 |     public let count: Int
+3 |     @inlinable public init(start: UnsafePointer<Element>?, count: Int)
+
+/tmp/blitztree-ui-bench.JzZPRy/app/TreemapView.swift:145:40: warning: capture of 'ops' with non-Sendable type 'UnsafeBufferPointer<TreemapNSView.PaintOp>' in an isolated closure
+143 |                     } else {
+144 |                         paintBands[band].withUnsafeBufferPointer {
+145 |                             Self.paint(ops, base: base, pw: pw, ph: ph, rows: rows, indices: $0)
+    |                                        `- warning: capture of 'ops' with non-Sendable type 'UnsafeBufferPointer<TreemapNSView.PaintOp>' in an isolated closure
+146 |                         }
+147 |                     }
+
+Swift.UnsafeBufferPointer:1:23: note: generic struct 'UnsafeBufferPointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeBufferPointer<Element> : Copyable where Element : ~Copyable {
+  |                       `- note: generic struct 'UnsafeBufferPointer' does not conform to the 'Sendable' protocol
+2 |     public let count: Int
+3 |     @inlinable public init(start: UnsafePointer<Element>?, count: Int)
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+/tmp/blitztree-ui-bench.JzZPRy/app/Agent.swift:88:72: warning: reference to captured var 'env' in concurrently-executing code [#SendableClosureCaptures]
+  86 |         let lock = NSLock()
+  87 |         DispatchQueue.concurrentPerform(iterations: found.count) { i in
+  88 |             let ok = isSignedIn(found[i].0, path: found[i].1, envPath: env.path)
+     |                                                                        `- warning: reference to captured var 'env' in concurrently-executing code [#SendableClosureCaptures]
+  89 |             lock.lock(); signedIn[i] = ok; lock.unlock()
+  90 |         }
+
+/tmp/blitztree-ui-bench.JzZPRy/app/Agent.swift:89:26: warning: mutation of captured var 'signedIn' in concurrently-executing code [#SendableClosureCaptures]
+  87 |         DispatchQueue.concurrentPerform(iterations: found.count) { i in
+  88 |             let ok = isSignedIn(found[i].0, path: found[i].1, envPath: env.path)
+  89 |             lock.lock(); signedIn[i] = ok; lock.unlock()
+     |                          `- warning: mutation of captured var 'signedIn' in concurrently-executing code [#SendableClosureCaptures]
+  90 |         }
+  91 |         env.agents = found.enumerated().map { i, pair in
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+PASS: cleanup parity; lazy outline children; rescan row reuse, new IDs, expansion, and shape invalidation

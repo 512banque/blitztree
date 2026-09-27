@@ -28,7 +28,8 @@ Isolated flattening of 262,401 synthetic nodes improved from **6.789 ms to
 destruction is included; fixture construction is excluded. Scan peak memory
 must be assessed separately from this CPU microbenchmark.
 
-Final end-to-end FFI comparison, nine alternating pairs after warming both builds:
+First-pass end-to-end FFI comparison (`74b8fe4` → `178d256`), nine
+alternating pairs after warming both builds:
 
 | Real scan | Before median (range) | After median (range) | Peak footprint, before → after |
 |---|---:|---:|---:|
@@ -52,7 +53,7 @@ establish a consistent better default across applications and repositories.
 Ten workers led the applications median, but four were nearly tied; repository
 samples varied heavily with background load. The core-count default is unchanged.
 
-### Treemap and rings
+### Treemap and rings (final combined changes)
 
 The treemap skips a parent cushion only when its children demonstrably cover
 every rounded pixel. Flat surfaces compute their shaded color once and fill
@@ -70,18 +71,36 @@ checks in the final rendering harness.
 
 | Offscreen operation, 2,880 × 1,800 pixels | Before median | After median |
 |---|---:|---:|
-| Treemap redraw, balanced 13,280-node tree | 30.343 ms | 7.080 ms |
-| Treemap redraw, 100,000 files | 46.264 ms | 34.727 ms |
-| Treemap redraw, 120-level directory chain | 26.666 ms | 5.053 ms |
-| Rings redraw, balanced tree | 57.495 ms | 57.325 ms |
-| Rings hit testing, 50,000 queries | 584.782 ms | 14.390 ms |
-| Treemap hit testing, 1,000 queries, 100,000 files | 2,769.655 ms | 0.307 ms |
+| Treemap redraw, balanced 13,280-node tree | 28.068 ms | 6.919 ms |
+| Treemap redraw, 100,000 files | 25.857 ms | 22.227 ms |
+| Treemap redraw, 120-level directory chain | 56.020 ms | 6.654 ms |
+| Rings redraw, balanced tree with free space | 56.421 ms | 38.279 ms |
+| Rings redraw, balanced full circle | 93.119 ms | 49.665 ms |
+| Rings hit testing, 50,000 queries | 601.027 ms | 15.076 ms |
+| Treemap hit testing, 1,000 queries, 100,000 files | 3,754.720 ms | 0.271 ms |
 
-These are nine alternating pairs. Treemap redraw includes building its hover
-index, so the flatter workload trades some of the paint savings for much cheaper
-pointer movement: about **2.77 ms → 0.00031 ms per query** in that fixture.
+These are nine alternating pairs against the original `74b8fe4`, rerun after
+both optimization passes. Treemap redraw includes building its hover index, so
+the flatter workload trades some paint savings for much cheaper pointer
+movement: about **3.75 ms → 0.00027 ms per query** in that fixture.
 The index stores leaf references by 32-point cell and uses additional memory;
 this audit does not claim a reduction in total app memory.
+
+The second pass profiled the remaining rings raster cost: compound strokes
+accounted for about 56.8 ms versus 26.5 ms for gradients in the diagnostic scene.
+Complex Retina scenes now expand the stroke once and rasterize its immutable
+outline through independent contexts clipped to disjoint integer bitmap rows.
+The contexts finish before the parent creates the image. Gradients retain the
+original serial path; scale 1 and scenes with fewer than 24 arcs retain the
+original stroke. Deep and very small rings scenes showed essentially neutral
+results. This is a draw-time improvement, not a promise of a particular FPS.
+
+All treemap pixels and geometry/hits match exactly. Scale-1 rings match exactly.
+Retina strokes differ by at most 5/255 in a channel, affecting at most 0.0967%
+of stored channel bytes per fixture; most differences are one level. Side-by-side
+exports were visually inspected. The harness enforces the explicit bound with
+`--allow-ring-rounding`; it does not call these Retina images pixel-identical.
+Raw final samples are `render-final.txt` and `rings-final-scale{1,2}.txt`.
 
 ### Cleanup and outline
 
@@ -106,6 +125,103 @@ The outline callback creates **100,000 → 0** child wrappers. This does not mea
 the total cost of expanding or reloading 100,000 visible rows. Submillisecond
 ratios are less useful than the absolute time saved.
 
+## Second pass: full-window latency, memory, and streamed plans
+
+Unless specified otherwise, these isolated continuation measurements use
+`178d256` (the first optimization pass) as their baseline. The rendering table
+above compares the original source with all final renderer changes.
+
+### Smaller engine arena
+
+A directory already appends its complete sibling batch while holding the arena
+mutex. Its children now use a `Range<u32>` instead of a separately allocated
+`Vec<u32>`, saving 16 bytes of metadata per node and one allocation per nonempty
+directory. Flattening expands those ranges into the same sorted C-ABI arrays.
+A 96-level, 64-branch regression verifies every node belongs to exactly one
+range and that parent ordering, counts, and byte totals remain correct.
+
+| Scan peak footprint | First pass | Second pass | Reduction |
+|---|---:|---:|---:|
+| Applications, 332,019 nodes | 59.36 MB | 51.45 MB | 13.3% |
+| Repositories, 264,380 nodes | 45.88 MB | 40.06 MB | 12.7% |
+
+These are seven/five alternating pairs respectively. Every paired inventory
+matched. The repository contents changed between the first and second audit
+batches, so the different node counts must not be compared as identical inputs.
+Unrelated builds/profilers overlapped these second-pass engine runs; their wall
+times are not reliable additional speed evidence. Per-process peak memory is
+reported separately from timing. Raw files are named `engine-ranges-*.json`.
+
+A final nine-pair original-to-complete-app scan comparison retained the same
+278,661 files, 53,357 directories, 32,533,331,968 allocated bytes and zero errors
+in every run. Median peak footprint was **61.36 → 51.81 MB (15.6% lower)**.
+Wall-time medians were 1.051 → 1.160 s, with broad overlapping ranges
+0.786–1.293 s and 0.739–1.242 s. Another benchmark process and system/build work
+were active around this run. The candidate was faster in five of nine pairs;
+this batch cannot establish a stable scan speedup or regression. We retain all
+samples in `engine-final-apps.json` and claim only the demonstrated memory
+reduction, not an overall engine throughput gain.
+
+### Full UI handoff
+
+An Instruments capture of the actual window identified SwiftUI graph updates,
+AppKit row construction, and a synchronous volume-capacity query. The initial
+renderer microbenchmarks did not include those costs. The UI now:
+
+- Observes 60 Hz progress and pointer-driven status text in separate views.
+- Reads capacity alongside the scan without blocking the main actor, publishing
+  matching tree/volume data together; progress still ticks if metadata is slow.
+- Builds the empty canvases during the first scan.
+- Reuses collapsed root rows and their cells on an unchanged rescan shape.
+  New tree IDs and ownership are rebound before cell refresh. Expanded or
+  previously materialized children, changed names/order/types/counts, and more
+  than 4,096 roots use the normal reload path.
+- Explicitly redraws treemap selection when a pick comes from the directory list.
+
+Three alternating pairs of full-window processes, each doing four applications
+scans, measured **166.149 → 96.848 ms** median for the first result and
+**127.887 → 37.044 ms** for the nine subsequent rescans. Rescan ranges were
+98.068–146.779 ms before and 34.702–48.050 ms after. Both versions used the same
+first-pass renderer and Rust library to isolate the UI changes.
+
+The measurement starts at the completed-engine poll and ends after forcing
+pending window layout/display. It measures CPU-side readiness, not GPU
+presentation. Every available row's tree identity/name/size is checked. For
+120 hover updates, root body evaluations dropped from 120 to zero. A separate
+injected 1.5-second metadata delay allowed 140 main-actor ticks and continuing
+progress, verifying that the wait is asynchronous. Earlier queued-callback
+logs should not be interpreted as uninterrupted main-thread blocking.
+See [`benchmarks/UI.md`](benchmarks/UI.md) and `ui-comparison-final.json`.
+
+### Plan preparation and cleanup responsiveness
+
+Incremental plan parsing now scans only new bytes and retains one incomplete
+item. JSONL processing tracks the unfinished line's search position and consumes
+each read batch once. Prompt preparation prunes size-sorted subtrees while
+preserving the original stable ordering and complete prompt text. Cancelling
+preparation prevents a late agent-process launch.
+
+| Offline operation | Before | After |
+|---|---:|---:|
+| Normal 12-item plan, about 4 KB | 1.208 ms | 0.055 ms |
+| 12-item plan containing 144 long paths, about 62 KB | 169.604 ms | 0.351 ms |
+| 4,000 JSONL events, 16 KB reads | 14.511 ms | 13.279 ms |
+| Fragmented 512 KB JSONL record (stress case) | 688.319 ms | 2.148 ms |
+| Complete prompt, synthetic 1,008,001-node/223 GB tree | 2.386 ms | 1.307 ms |
+
+All use nine alternating pairs. Large fragmented inputs expose the old
+repeated-scanning behavior; they are not typical model latency. No agent,
+network request, authentication, or real cleanup ran in these tests. Complete
+protocol event/outgoing-message sequences and prompt bytes match, including
+random chunk boundaries, Unicode/escapes, invalid records, and restarts.
+
+Manual cleanup's existing filesystem moves now run in one background batch.
+The captured selection cannot be submitted twice; conflicting scans/agent
+starts wait until the batch completes. Fake-I/O tests cover responsiveness,
+ordered failures, one completion/rescan, and delayed agent discovery. Failures
+are retained on the model even if the inspector closes during the batch.
+See [`benchmarks/AGENT.md`](benchmarks/AGENT.md).
+
 ## Verification and reproduction
 
 ```sh
@@ -113,7 +229,8 @@ cargo test --release
 cargo test --release --lib flatten_benchmark -- --ignored --nocapture
 benchmarks/run-ui.sh
 benchmarks/run-ui.sh --scan-path /Applications /path/to/projects
-uv run python benchmarks/rendering.py --baseline 74b8fe4
+uv run python benchmarks/rendering.py --baseline 74b8fe4 --allow-ring-rounding
+benchmarks/run-agent.sh --check-only
 ./build.sh
 ```
 
@@ -152,7 +269,9 @@ Rendering verification passed 28 paired bitmap/geometry cases, 126
 scale/root/paint-band cases, 2,000 independent rounded-pixel coverage cases,
 260,708 ring hit comparisons, and 11,344 treemap hit comparisons. It includes
 fractional sizes, zero-byte and empty trees, free space, very uneven weights,
-deep chains, and invalidation followed by returning to the original size.
+deep chains, and invalidation followed by returning to the original size. An
+additional 42-case matrix passes exactly at scale 1 and within the documented
+stroke-rounding bound at scale 2.
 
 The complete app built successfully and passed `codesign --verify --deep
 --strict`. Native UI smoke testing covered a real `/Applications` scan, folder
@@ -160,34 +279,44 @@ zoom, switching treemap/rings, free-space toggling, and rescan. Both scans
 displayed 278,661 files and 32.53 GB; `du -skx /Applications` independently agreed
 at exactly **32,533,331,968 allocated bytes**. The tested app needed no new Full
 Disk Access grant for that path, and its AI startup was disabled for QA.
-The build retains the same three Swift concurrency warnings seen in the baseline
-(one scoped render buffer capture and two agent-locator captures).
+The final combined native harness additionally passed three applications scans,
+selection synchronization, both renderers, free-space toggles, and scrolling to
+the bottom and back to verify recycled cells. It checked current tree ownership,
+names and sizes for every available cell; 120 hover updates caused zero root
+body evaluations. Its captured final window was visually inspected. The current
+release Rust suite passes five tests, with the isolated timing test ignored by
+default. Final engine/UI logs are checked in alongside the benchmark samples.
+The build retains two pre-existing AgentLocator concurrency warnings. The
+scoped treemap buffer warning is resolved with an explicit lifetime proof.
 
-## Remaining opportunities
+## Experiments rejected and practical limits
 
-1. **Filesystem traversal remains the scan limit.** A baseline Instruments
-   sample attributed 53.8% of running CPU samples to `getattrlistbulk` and 37.4%
-   to `open`. An `openat`-based experiment could reduce repeated path resolution,
-   but needs bounded descriptor ownership, deep-tree tests, and measurements
-   before replacing the current walker. This is a hypothesis, not a measured win.
-2. **Rings painting remains relatively expensive.** Reusing paths avoids
-   repeated construction but did not materially improve the initial raster
-   timings. The big demonstrated rings benefit is pointer lookup. Further work
-   should profile clipping, gradients, and antialiasing rather than assume more
-   caching will help.
-   The native smoke log also showed 159–218 ms from tree completion until the
-   main queue became free, despite about 28 ms of treemap layout/paint. That is
-   a useful next profiling target in the full UI handoff; this audit does not
-   claim that all main-thread stalls are eliminated.
-3. **Agent preparation has bounded opportunities.** Prompt generation walks
-   the tree and sorts candidate lists before taking 250 folders/80 files.
-   Streaming JSON parsing rereads its accumulated buffer per chunk. These run
-   once per plan or on small plans; no measured benefit justified changing the
-   agent integration in this audit.
-4. **FDA caching was not justified by the measured denied-probe path**
-   (about 0.07 ms). The successful Full Disk Access path was not benchmarked.
+- **Lazy treemap weights plus per-band operation lists:** the combined candidate
+  regressed the wide fixture from 13.658 to 28.374 ms against the first pass.
+  Both experiments were removed; raw samples remain in the rendering report.
+- **Bounded parent descriptors / `openat`:** exact inventories and descriptor
+  release tests passed, but applications changed 0.580 → 0.584 s, repositories
+  0.433 → 0.430 s, and the smaller third target 0.096 → 0.095 s. The lifecycle
+  complexity was not justified, and the implementation was removed.
+- **Bulk buffer sizes:** 16–1,024 KiB variants did not establish a useful win.
+  Overlapping unrelated workloads invalidated much of the sweep; the shipping
+  256 KiB buffer is unchanged.
+- **Skipping directories reported empty:** rejected because it changes
+  unreadable-directory accounting and relies on metadata sampled before descent.
+- **Bounded top-k heap for prompt rows:** slower than the already-pruned sort
+  (0.214 versus 0.027 ms for candidate selection); simple sorting remains.
+- **Whole-module Swift optimization:** no useful layout improvement in the
+  tested window; production compiler settings remain unchanged.
+- **FDA caching:** denied probes already measured about 0.07 ms, so it was not
+  worth changing permission-refresh behavior. The successful-FDA path was not
+  benchmarked.
 
-Unchanged engine limitations found during review: invalid UTF-8 entry names and
-per-entry metadata errors are skipped; freeing a scan handle does not cancel
-its worker scan. These are separate correctness/lifecycle work, not performance
-improvements claimed by this change.
+The baseline scanner's running-CPU profile spent 53.8% in `getattrlistbulk` and
+37.4% in `open`. Filesystem latency and native AppKit/SwiftUI setup still impose
+costs; this report does not promise zero latency or exhaust every hardware,
+filesystem, and workload combination. Accepted changes have measured benefits
+or focused responsiveness/correctness checks; unproven tuning was removed.
+
+Existing engine limitations remain outside this performance work: invalid UTF-8
+entry names and per-entry metadata errors are skipped; freeing a scan handle
+does not cancel its worker scan. The current UI does not expose scan cancellation.
