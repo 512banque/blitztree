@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.6 — 2026-09-27
+
+- BlitzTree updates itself. It checks GitHub for a new release once a day, downloads it in the background and installs it when you quit. Check for Updates… is in the BlitzTree menu. Updates are signed, and Full Disk Access carries over.
+- Coming from 0.5.5 or earlier: download this version once by hand; from here on it updates itself.
+
 ## 0.5.5 — 2026-09-27
 
 - AI cleanup only runs when you click "Clean up with Claude Code" (or Codex). Before, the first scan after launch started your agent on its own, which sent folder paths and sizes to Anthropic or OpenAI without asking. Now the panel opens on the button and nothing leaves your Mac until you click it.
