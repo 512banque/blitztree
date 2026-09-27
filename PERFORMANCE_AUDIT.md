@@ -222,10 +222,38 @@ ordered failures, one completion/rescan, and delayed agent discovery. Failures
 are retained on the model even if the inspector closes during the batch.
 See [`benchmarks/AGENT.md`](benchmarks/AGENT.md).
 
-## Third pass: once-per-pixel treemap and list selection
+## Third pass: flat engine, once-per-pixel treemap, list selection
 
 Baseline: `0648293` (v0.5.1); rechecked identical against `2d9481d`. Same machine, load average 4–11, runs alternated
 under a shared lock.
+
+### Engine builds the flat tree during the walk
+
+Baseline for this part: `2d9481d` (PR #2). Each directory's entries are
+appended straight into the C-ABI arrays (parents, sizes, flags, name offsets
+and bytes) under one short lock; a finish pass derives subtree totals,
+completeness and the sorted child lists from the contiguous sibling runs. There
+is no node arena to convert or free, and per-worker scratch buffers mean reading
+a directory allocates nothing. Hard-link ownership (first path wins),
+incomplete-subtree propagation, Clean Up selection and the JSON CLI keep their
+exact behaviour. Full C-ABI dumps (every path, both sizes, file count, flags,
+child order and error count) are identical to `2d9481d` on `/Applications`,
+`/Library` and `/System/Library`; CLI JSON is identical on `/Applications` and
+`/opt/homebrew`.
+
+| `bench ffi` | `2d9481d` | Now |
+|---|---:|---:|
+| Peak footprint, `/Applications` (332k nodes) | 51.1 MB | 27.5 MB |
+| Peak footprint, home folder without FDA (1.12M nodes) | 143.5 MB | 74.8 MB |
+| Walk end → tree ready, `/Applications` | 9.1–10.3 ms | 2.7–3.5 ms |
+| Walk end → tree ready, home folder | 32.2–40.5 ms | 10.1–11.4 ms |
+| Full pipeline, home folder | 4.02 s (3.96–4.15) | 3.99 s (3.90–4.05) |
+
+Wall time is unchanged within noise: about 95% of scan CPU is kernel time in
+`getattrlistbulk` and `open`. Rejected on the way: `openat` from a kept-open
+parent (same wall time), breadth-first job order (33% slower), 16/64 KB read
+buffers and fewer requested attributes (no change), skipping each directory's
+final empty read (within noise, risky off APFS), 6–32 workers (10 stays best).
 
 ### Treemap paints each pixel once
 

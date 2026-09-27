@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Build the scan's flat tree during the walk: about half the peak memory, and the tree reaches the UI 3–4x sooner after the last directory is read.
 - Treemap renders about 2x faster (each pixel shaded once) and hover redraws only what changed, with identical pixels.
 - Selecting a file inside a very large folder in the list is about 2x faster.
 
