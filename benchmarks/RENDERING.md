@@ -52,3 +52,24 @@ lists: the combined candidate regressed the 100,001-node fixture from 13.658 ms
 to 28.374 ms against `178d256`, with balanced/deep maps essentially unchanged.
 Those algorithm changes are absent from the final source. The raw paired
 samples are retained as `results/2026-09-27/render-rejected-treemap.txt`.
+
+## Real scans (`--real`)
+
+```sh
+uv run --no-project python benchmarks/rendering.py --baseline origin/main --real /Applications --real ~
+```
+
+Compiles the baseline's `Treemap.swift`/`TreemapView.swift` (renamed `Legacy*`)
+beside the whole current app and the Rust engine (`rendering_real.swift`), scans
+each folder once, and for 3200×2000 and 1600×1600 bitmaps, a zoomed-in root and
+free space shown, requires identical bitmaps (FNV hashes printed) and identical
+leaf, directory and label geometry. It then times alternating pairs: layout,
+paint, and the view's full relayout plus its first hit test (the candidate builds
+its leaf index lazily; the baseline builds it during relayout).
+
+It also replays 300 mouse moves with selection changes and 50 with agent
+highlights at 1600×1000 pt @2x. The baseline receives real `mouseMoved` events and
+redraws its whole view; the candidate redraws only the rects it invalidates,
+clipped like AppKit's damaged region, into a persistent context that must equal
+the baseline's full redraw after every move. It reports hit-test and redraw time
+per move. `--check-only` skips timings; `--iterations N` sets the pairs.

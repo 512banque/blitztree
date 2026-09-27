@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The treemap canvas: cushion-shaded rects rendered once into a bitmap per
-/// layout change; hover/selection drawn as a light overlay per frame.
+/// layout change; hover/selection drawn as a light overlay per frame, and a
+/// mouse move redraws only the few rects whose overlay changed.
 final class TreemapNSView: NSView {
     var model: ScanModel? {
         // SwiftUI hands the same model back on every update; only a new one
@@ -16,10 +17,11 @@ final class TreemapNSView: NSView {
     private var litRects: [CGRect]?
     private var rects: [TMRect] = []
     private var leaves: [TMRect] = [] // files only, for hit-testing
-    private var leafIndex = TMLeafIndex()
     /// `strip` is the title bar (text + hit target); `region` is the whole
     /// directory rect (hover boundary). Both in view points.
     private var labels: [TMLabel] = []
+    /// Label text laid out once per render, not on every frame.
+    private var labelText: [LabelText] = []
     private var labelHits: [(rect: CGRect, node: Int)] = []
     private var bitmap: CGImage?
     private var lastSize: CGSize = .zero
@@ -45,10 +47,10 @@ final class TreemapNSView: NSView {
 
     func relayout() {
         guard let model, let tree = model.tree, bounds.width > 4, bounds.height > 4 else {
-            rects = []; leaves = []; leafIndex = TMLeafIndex()
-            labels = []; labelHits = []; hoveredLabel = nil; litRects = nil
-            bitmap = nil
+            rects = []; leaves = []; labels = []; labelText = []; labelHits = []
+            hoveredLabel = nil; litRects = nil; bitmap = nil
             lastSize = .zero
+            resetLookups()
             needsDisplay = true
             return
         }
@@ -61,332 +63,217 @@ final class TreemapNSView: NSView {
         leaves.removeAll(keepingCapacity: true)
         labels.removeAll(keepingCapacity: true)
         renderBitmap(tree: tree)
+        // Everything redraws, so the overlay simply starts from the model
+        // (a zoom clears the selection, a rescan the hover).
+        hoveredNode = model.hovered
+        shown = Overlay(hovered: hoveredNode, label: hoveredLabel, selection: model.selection)
         needsDisplay = true
-    }
-
-    // ---- WinDirStat-style cushion renderer ----
-    //
-    // Every node adds a parabolic ridge to an accumulated quadratic surface
-    //   z = ax2·x² + ax1·x + ay2·y² + ay1·y
-    // and leaves are shaded per pixel from the surface normal and a fixed
-    // light. Parents paint before children, so every pixel is always covered
-    // — no voids, and nesting reads through the compounded cushions exactly
-    // like WizTree/WinDirStat.
-
-    nonisolated private struct Surface {
-        var ax2 = 0.0, ax1 = 0.0, ay2 = 0.0, ay1 = 0.0
-
-        mutating func addRidge(_ r: CGRect, height: Double) {
-            let wx = Double(r.width), wy = Double(r.height)
-            if wx > 0 {
-                let h4 = 4 * height / (wx * wx)
-                ax2 -= h4
-                ax1 += h4 * Double(r.minX + r.maxX)
-            }
-            if wy > 0 {
-                let h4 = 4 * height / (wy * wy)
-                ay2 -= h4
-                ay1 += h4 * Double(r.minY + r.maxY)
-            }
-        }
-    }
-
-    nonisolated private enum Cushion {
-        static let baseHeight = 0.55   // ridge height at the top level
-        static let falloff = 0.72      // height multiplier per depth
-        static let ambient = 0.38
-        // Light from the top-left, mostly overhead.
-        static let lx = -0.408, ly = -0.408, lz = 0.816
-
-        /// Ridge height proportional to rect size so big tiles still curve.
-        static func height(_ r: CGRect, _ h: Double) -> Double {
-            h * Double(min(r.width, r.height))
-        }
-    }
-
-    /// Where one render's hit-testing geometry lands.
-    nonisolated private final class RenderOutput: @unchecked Sendable {
-        var rects: [TMRect] = []
-        var leaves: [TMRect] = []
-        var labels: [TMLabel] = []
     }
 
     private func renderBitmap(tree: Tree) {
         let scale = window?.backingScaleFactor ?? 2
         let pw = max(1, Int((bounds.width * scale).rounded()))
         let ph = max(1, Int((bounds.height * scale).rounded()))
-        var pixels = [UInt32](repeating: 0xFF16_1616, count: pw * ph)
-        let showFree = model?.showFreeSpace ?? false
-        let freeBytes = model?.freeBytes ?? 0
-        let rootIndex = model?.viewRoot ?? 0
-        let out = RenderOutput()
-
-        // Lay out once, omit cushions completely covered by opaque children,
-        // then paint horizontal bands on every core; each band runs the same
-        // steps in the same order over its own rows only, so the result is
-        // pixel-identical to a single pass.
-        let started = Date()
-        let ops = Self.layoutOps(
-            tree: tree, pw: pw, ph: ph, scale: scale, root: rootIndex,
-            showFree: showFree, freeBytes: freeBytes, out: out
+        let r = TreemapRenderer.render(
+            tree: tree, pw: pw, ph: ph, scale: scale, root: model?.viewRoot ?? 0,
+            showFree: model?.showFreeSpace ?? false, freeBytes: model?.freeBytes ?? 0
         )
-        let laidOut = Date()
-        let bands = max(1, min(ProcessInfo.processInfo.activeProcessorCount * 3, ph / 32))
-        ops.withUnsafeBufferPointer { ops in
-            pixels.withUnsafeMutableBufferPointer { buf in
-                // concurrentPerform joins before either borrowed buffer ends.
-                nonisolated(unsafe) let operations = ops
-                nonisolated(unsafe) let base = buf.baseAddress!
-                DispatchQueue.concurrentPerform(iterations: bands) { band in
-                    Self.paint(operations, base: base, pw: pw, ph: ph,
-                               rows: (ph * band / bands)..<(ph * (band + 1) / bands))
-                }
-            }
-        }
         if ProcessInfo.processInfo.environment["BZ_TIMING"] != nil {
             NSLog("BZ render %dx%d: %d steps, layout %.1f ms, paint %.1f ms (%d bands)",
-                  pw, ph, ops.count, laidOut.timeIntervalSince(started) * 1000,
-                  -laidOut.timeIntervalSinceNow * 1000, bands)
+                  pw, ph, r.steps, r.layoutMs, r.paintMs, r.bands)
         }
-        rects = out.rects
-        leaves = out.leaves
-        leafIndex = TMLeafIndex(leaves: leaves, size: bounds.size)
+        rects = r.rects
+        leaves = r.leaves
         litRects = nil
-        labels = out.labels
-
-        let data = pixels.withUnsafeBufferPointer { Data(buffer: $0) }
-        bitmap = CGImage(
-            width: pw, height: ph,
-            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: pw * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-            provider: CGDataProvider(data: data as CFData)!,
-            decode: nil, shouldInterpolate: false, intent: .defaultIntent
-        )
+        labels = r.labels
+        bitmap = r.image
+        resetLookups()
+        labelText = labels.map { LabelText($0, tree: tree, freeBytes: model?.freeBytes ?? 0) }
+        labelHits = Scan.hits(labels)
     }
 
-    /// One step of the cushion painter, in paint order.
-    nonisolated private enum PaintOp {
-        case shade(CGRect, TypeColor.RGB, Surface)
-        /// Darken a frame band around the rect (thickness in pixels).
-        case frame(CGRect, Int, Double)
-    }
+    /// A label's strings and their sizes in the resting (unhovered) look.
+    private struct LabelText {
+        var name: NSAttributedString, nameHeight: CGFloat, nameWidth: CGFloat = 0
+        var size: NSAttributedString?, sizeSize: CGSize = .zero
+        /// Where a free-space tag's text may paint (it floats unclipped).
+        var bounds: CGRect
 
-    /// Lays the treemap out once, in paint order: parents before children,
-    /// frames after their contents. Also fills `out` with the geometry used
-    /// for hit-testing and labels.
-    nonisolated private static func layoutOps(
-        tree: Tree, pw: Int, ph: Int, scale: CGFloat, root: Int,
-        showFree: Bool, freeBytes: UInt64, out: RenderOutput
-    ) -> [PaintOp] {
-        var ops: [PaintOp] = []
-        ops.reserveCapacity(1 << 16)
-        var colors = TypeColor.Cache()
-
-        func draw(_ node: Int, _ rect: CGRect, _ h: Double, _ surface: Surface, _ depth: Int) {
-            guard rect.width >= 0.5, rect.height >= 0.5 else { return }
-            var s = surface
-            // The view root adds no ridge: a window-wide parabola would
-            // just vignette the whole map.
-            if depth > 0 {
-                s.addRidge(rect, height: Cushion.height(rect, h))
-            }
-            let ptRect = CGRect(
-                x: rect.minX / scale, y: rect.minY / scale,
-                width: rect.width / scale, height: rect.height / scale
-            )
-            guard tree.isDir(node) else {
-                out.leaves.append(TMRect(rect: ptRect, node: node, isDir: false))
-                ops.append(.shade(rect, colors.color(tree, node), s))
+        init(_ label: TMLabel, tree: Tree, freeBytes: UInt64) {
+            if label.node < 0 {
+                // Free-space keeps a small floating tag (it has no frame).
+                let text = label.region.width > 130
+                    ? "Free space  ·  \(Fmt.size(freeBytes))" : "Free space"
+                name = NSAttributedString(string: text, attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.55),
+                ])
+                let s = name.size()
+                nameHeight = s.height
+                bounds = CGRect(x: label.region.minX + 8, y: label.region.minY + 6,
+                                width: s.width, height: s.height).insetBy(dx: -2, dy: -2)
                 return
             }
-            out.rects.append(TMRect(rect: ptRect, node: node, isDir: true))
-
-            // WizTree-style framed box: big directories get a title
-            // strip on their top border and children render inside
-            // the frame — at every depth, no zooming required.
-            let headerH = (15 * scale).rounded()
-            let headed = depth >= 1
-                && rect.width >= 88 * scale
-                && rect.height >= max(58 * scale, headerH * 2.8)
-            var content = rect
-            var layoutNode = node
-            if headed {
-                // Collapse pass-through chains (a dir whose one child
-                // holds ~everything) into a single "A ▸ B" strip.
-                var stripName = tree.name(node)
-                while let first = tree.children(layoutNode).first {
-                    let fi = Int(first)
-                    guard tree.isDir(fi),
-                          Double(tree.alloc[fi]) >= 0.99 * Double(max(tree.alloc[layoutNode], 1))
-                    else { break }
-                    stripName += "  ▸  " + tree.name(fi)
-                    layoutNode = fi
-                }
-                ops.append(.shade(rect, TypeColor.strip, Surface()))
-                let strip = CGRect(x: rect.minX, y: rect.minY,
-                                   width: rect.width, height: headerH)
-                out.labels.append(TMLabel(
-                    strip: CGRect(x: strip.minX / scale, y: strip.minY / scale,
-                                  width: strip.width / scale, height: strip.height / scale),
-                    region: ptRect, node: layoutNode, depth: depth, name: stripName
-                ))
-                content = CGRect(x: rect.minX + 2, y: rect.minY + headerH,
-                                 width: rect.width - 4, height: rect.height - headerH - 2)
+            name = Self.name(label, hovered: false)
+            let ns = name.size()
+            (nameWidth, nameHeight) = (ns.width, ns.height)
+            if label.strip.width > 175 {
+                let s = Self.size(label, tree: tree, hovered: false)
+                size = s
+                sizeSize = s.size()
             }
-
-            // Retain the parent cushion wherever child tiles leave rounded
-            // pixels uncovered. Fully covered parents need no shading.
-            if content.width >= 3, content.height >= 3 {
-                let level: Squarify.Layout
-                if depth == 0, showFree, freeBytes > 0 {
-                    // Free disk space competes for area like a file.
-                    var items: [(node: Int, size: Double)] = tree.children(layoutNode).compactMap {
-                        let sz = Double(tree.alloc[Int($0)])
-                        return sz > 0 ? (Int($0), sz) : nil
-                    }
-                    items.append((-1, Double(freeBytes)))
-                    items.sort { $0.size > $1.size }
-                    level = Squarify.layoutItems(items, rect: content)
-                } else {
-                    level = Squarify.layoutLevel(tree: tree, dir: layoutNode, rect: content)
-                }
-                if !level.coversBounds { ops.append(.shade(content, TypeColor.dir, s)) }
-                for (kid, r) in level.tiles {
-                    if kid == -1 {
-                        // Flat, quiet void — clearly "nothing here".
-                        ops.append(.shade(r, TypeColor.free, Surface()))
-                        let pr = CGRect(x: r.minX / scale, y: r.minY / scale,
-                                        width: r.width / scale, height: r.height / scale)
-                        if pr.width >= 90, pr.height >= 30 {
-                            out.labels.append(TMLabel(strip: pr, region: pr, node: -1, depth: 1, name: "Free space"))
-                        }
-                    } else {
-                        draw(kid, r, depth == 0 ? h : h * Cushion.falloff, s, depth + 1)
-                    }
-                }
-            } else {
-                ops.append(.shade(content, TypeColor.dir, s))
-            }
-            // Separation frames for unheaded dirs (headed ones have
-            // their own frame already).
-            if !headed {
-                switch depth {
-                case 0: break // window edge needs no frame
-                case 1: ops.append(.frame(rect, Int(2 * scale), 0.30))
-                case 2: ops.append(.frame(rect, Int(scale), 0.42))
-                case 3: ops.append(.frame(rect, max(1, Int(scale / 2)), 0.55))
-                default:
-                    if rect.width > 28, rect.height > 28 {
-                        ops.append(.frame(rect, 1, 0.62))
-                    }
-                }
-            }
+            bounds = label.strip.insetBy(dx: -2, dy: -2)
         }
 
-        draw(root, CGRect(x: 0, y: 0, width: pw, height: ph), Cushion.baseHeight, Surface(), 0)
-        return ops
-    }
-
-    /// Runs the paint steps for pixel rows in `rows` only. Steps are applied
-    /// in order, so any split into bands gives the same pixels as one pass.
-    nonisolated private static func paint(
-        _ ops: UnsafeBufferPointer<PaintOp>, base: UnsafeMutablePointer<UInt32>,
-        pw: Int, ph: Int, rows: Range<Int>
-    ) {
-        let by0 = rows.lowerBound, by1 = rows.upperBound
-
-        func shade(_ r: CGRect, _ rgb: TypeColor.RGB, _ s: Surface) {
-            let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
-            let y0 = max(by0, Int(r.minY.rounded())), y1 = min(by1, Int(r.maxY.rounded()))
-            guard x1 > x0, y1 > y0 else { return }
-            // Root backgrounds, directory strips and free space have a
-            // constant normal. Calculate their color once, then fill rows.
-            if s.ax2 == 0, s.ay2 == 0 {
-                let nx = -s.ax1, ny = -s.ay1
-                let cos = (nx * Cushion.lx + ny * Cushion.ly + Cushion.lz)
-                    / (nx * nx + ny * ny + 1).squareRoot()
-                let lum = Cushion.ambient + max(0, cos) * (1 - Cushion.ambient)
-                let r8 = UInt32(min(255, rgb.r * lum * 255))
-                let g8 = UInt32(min(255, rgb.g * lum * 255))
-                let b8 = UInt32(min(255, rgb.b * lum * 255))
-                let pixel = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
-                for py in y0..<y1 {
-                    (base + py * pw + x0).update(repeating: pixel, count: x1 - x0)
-                }
-                return
-            }
-            for py in y0..<y1 {
-                let fy = Double(py) + 0.5
-                let ny = -(2 * s.ay2 * fy + s.ay1)
-                let row = base + py * pw
-                for px in x0..<x1 {
-                    let fx = Double(px) + 0.5
-                    let nx = -(2 * s.ax2 * fx + s.ax1)
-                    let cos = (nx * Cushion.lx + ny * Cushion.ly + Cushion.lz)
-                        / (nx * nx + ny * ny + 1).squareRoot()
-                    let lum = Cushion.ambient + max(0, cos) * (1 - Cushion.ambient)
-                    let r8 = UInt32(min(255, rgb.r * lum * 255))
-                    let g8 = UInt32(min(255, rgb.g * lum * 255))
-                    let b8 = UInt32(min(255, rgb.b * lum * 255))
-                    (row + px).pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
-                }
-            }
+        static func name(_ label: TMLabel, hovered: Bool) -> NSAttributedString {
+            NSAttributedString(string: label.name, attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                .foregroundColor: NSColor.white.withAlphaComponent(hovered ? 1.0 : 0.92),
+            ])
         }
 
-        /// Separation "grout" between directories. Multiplies what's
-        /// underneath so hues survive.
-        func frame(_ r: CGRect, thickness: Int, factor: Double) {
-            let x0 = max(0, Int(r.minX.rounded())), x1 = min(pw, Int(r.maxX.rounded()))
-            let y0 = max(0, Int(r.minY.rounded())), y1 = min(ph, Int(r.maxY.rounded()))
-            guard x1 - x0 > thickness * 2 + 2, y1 - y0 > thickness * 2 + 2 else { return }
-            func darken(_ px: Int, _ py: Int) {
-                let p = base + py * pw + px
-                let v = p.pointee
-                let r8 = UInt32(Double(v & 0xFF) * factor)
-                let g8 = UInt32(Double((v >> 8) & 0xFF) * factor)
-                let b8 = UInt32(Double((v >> 16) & 0xFF) * factor)
-                p.pointee = 0xFF00_0000 | (b8 << 16) | (g8 << 8) | r8
-            }
-            for t in 0..<thickness {
-                if (by0..<by1).contains(y0 + t) { for px in x0..<x1 { darken(px, y0 + t) } }
-                if (by0..<by1).contains(y1 - 1 - t) { for px in x0..<x1 { darken(px, y1 - 1 - t) } }
-                let v0 = max(y0 + thickness, by0), v1 = min(y1 - thickness, by1)
-                if v1 > v0 {
-                    for py in v0..<v1 {
-                        darken(x0 + t, py)
-                        darken(x1 - 1 - t, py)
-                    }
-                }
-            }
-        }
-
-        let top = CGFloat(by0), bottom = CGFloat(by1)
-        for op in ops {
-            switch op {
-            case let .shade(r, rgb, s):
-                if r.maxY.rounded() > top, r.minY.rounded() < bottom { shade(r, rgb, s) }
-            case let .frame(r, thickness, factor):
-                if r.maxY.rounded() > top, r.minY.rounded() < bottom {
-                    frame(r, thickness: thickness, factor: factor)
-                }
-            }
+        static func size(_ label: TMLabel, tree: Tree, hovered: Bool) -> NSAttributedString {
+            NSAttributedString(string: Fmt.size(tree.alloc[label.node]), attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.white.withAlphaComponent(hovered ? 0.95 : 0.60),
+            ])
         }
     }
+
+    // ---- Overlay state ----
+
+    /// What the overlay shows. It changes only through `syncOverlay()`,
+    /// which invalidates exactly the areas that look different, so a
+    /// partial redraw never mixes two states.
+    private struct Overlay: Equatable {
+        var hovered: Int?, label: Int?, selection: Int?
+    }
+    private var shown = Overlay()
+    private var hoveredLabel: Int? = nil
+    /// `model.hovered` as this view last set it. Read instead of the model
+    /// so `updateNSView` doesn't subscribe SwiftUI to every hover change.
+    private var hoveredNode: Int? = nil
+
+    /// Catch the overlay up with the model (hover, hovered label, selection)
+    /// and queue redraws of just what changed (returned for the bench).
+    @discardableResult
+    func syncOverlay() -> [CGRect] {
+        let now = Overlay(hovered: hoveredNode, label: hoveredLabel, selection: model?.selection)
+        guard now != shown else { return [] }
+        let dirty = dirtyRects(from: shown, to: now)
+        for r in dirty { setNeedsDisplay(r) }
+        shown = now
+        return dirty
+    }
+
+    /// Everything that looks different between two overlay states.
+    private func dirtyRects(from a: Overlay, to b: Overlay) -> [CGRect] {
+        var out: [CGRect] = []
+        if a.hovered != b.hovered {
+            for h in [a.hovered, b.hovered] {
+                guard let h, let r = hoverRects(h) else { continue }
+                out += ring(r.leaf, outside: 1, inside: 2)
+                if let p = r.parent { out += ring(p, outside: 1, inside: 2) }
+            }
+        }
+        if a.label != b.label {
+            for l in [a.label, b.label] {
+                guard let l, let i = Scan.label(labels, l) else { continue }
+                // The halo straddles region.insetBy(2): 3.5 pt either side.
+                out += ring(labels[i].region, outside: 2.5, inside: 6.5)
+                out.append(labels[i].strip.insetBy(dx: -1, dy: -1))
+            }
+        }
+        if a.selection != b.selection {
+            for s in [a.selection, b.selection] {
+                guard let s, let r = dirRect(s) else { continue }
+                out += ring(r, outside: 1, inside: 3)
+            }
+        }
+        return out
+    }
+
+    /// The four edge bands of `r`, `outside` beyond it to `inside` within.
+    private func ring(_ r: CGRect, outside o: CGFloat, inside i: CGFloat) -> [CGRect] {
+        let outer = r.insetBy(dx: -o, dy: -o)
+        guard r.width > 2 * i, r.height > 2 * i else { return [outer] }
+        return [
+            CGRect(x: outer.minX, y: outer.minY, width: outer.width, height: o + i),
+            CGRect(x: outer.minX, y: r.maxY - i, width: outer.width, height: o + i),
+            CGRect(x: outer.minX, y: outer.minY, width: o + i, height: outer.height),
+            CGRect(x: r.maxX - i, y: outer.minY, width: o + i, height: outer.height),
+        ]
+    }
+
+    // ---- Lookups (one scan per change, not per frame or mouse move) ----
+
+    private var leafMemo: (node: Int, rects: (leaf: CGRect, parent: CGRect?)?)?
+    private var dirMemo: [Int: CGRect?] = [:]
+    /// Built on the first hit test after a render, not on every resize.
+    private var leafIndex: TMLeafIndex?
+
+    private func resetLookups() {
+        leafMemo = nil
+        dirMemo = [:]
+        leafIndex = nil
+    }
+
+    /// The hovered file's rect and its parent directory's, if on screen.
+    private func hoverRects(_ node: Int) -> (leaf: CGRect, parent: CGRect?)? {
+        if let m = leafMemo, m.node == node { return m.rects }
+        // Only files are in `leaves`.
+        guard let tree = model?.tree, !tree.isDir(node) else { return nil }
+        return remember(Scan.leaf(leaves, node), tree: tree, node: node)
+    }
+
+    @discardableResult
+    private func remember(_ leaf: TMRect?, tree: Tree, node: Int) -> (leaf: CGRect, parent: CGRect?)? {
+        let found = leaf.map { ($0.rect, dirRect(Int(tree.parents[node]))) }
+        leafMemo = (node, found)
+        return found
+    }
+
+    private func dirRect(_ node: Int) -> CGRect? {
+        if let r = dirMemo[node] { return r }
+        let r = Scan.dir(rects, node)
+        if dirMemo.count > 64 { dirMemo = [:] }
+        dirMemo[node] = r
+        return r
+    }
+
+    // ---- Drawing ----
 
     override func draw(_ dirtyRect: NSRect) {
+        // Redraw only what was invalidated: a mouse move damages a few thin
+        // strips, and blitting the whole bitmap (25 MB on a big Retina
+        // window) plus every label was most of each hover frame.
+        var damaged: UnsafePointer<NSRect>?
+        var n = 0
+        getRectsBeingDrawn(&damaged, count: &n)
+        let dirty = n > 0 && damaged != nil ? Array(UnsafeBufferPointer(start: damaged, count: n)) : [dirtyRect]
+        func needs(_ r: CGRect) -> Bool { Scan.intersects(dirty, r) }
+
         if let bitmap {
-            NSImage(cgImage: bitmap, size: bounds.size).draw(
-                in: bounds, from: .zero, operation: .copy, fraction: 1,
-                respectFlipped: true,
-                hints: [.interpolation: NSImageInterpolation.none.rawValue]
-            )
+            let full = CGRect(x: 0, y: 0, width: bitmap.width, height: bitmap.height)
+            let sx = CGFloat(bitmap.width) / bounds.width, sy = CGFloat(bitmap.height) / bounds.height
+            for r in dirty {
+                let px = CGRect(x: r.minX * sx, y: r.minY * sy, width: r.width * sx, height: r.height * sy)
+                    .integral.intersection(full)
+                guard !px.isEmpty, let part = px == full ? bitmap : bitmap.cropping(to: px) else { continue }
+                let dst = CGRect(x: px.minX / sx, y: px.minY / sy, width: px.width / sx, height: px.height / sy)
+                NSImage(cgImage: part, size: dst.size).draw(
+                    in: dst, from: .zero, operation: .copy, fraction: 1,
+                    respectFlipped: true,
+                    hints: [.interpolation: NSImageInterpolation.none.rawValue]
+                )
+            }
         }
 
         guard let model, let tree = model.tree else { return }
 
         // Label hover boundary FIRST, so strip text always renders above it.
-        if let hl = hoveredLabel, let lab = labels.first(where: { $0.node == hl }) {
+        if let hl = shown.label, let i = Scan.label(labels, hl), case let lab = labels[i],
+           needs(lab.region.insetBy(dx: -3, dy: -3)) {
             let rr = lab.region.insetBy(dx: 2, dy: 2)
             let halo = NSBezierPath(rect: rr)
             halo.lineWidth = 7
@@ -400,70 +287,56 @@ final class TreemapNSView: NSView {
 
         // Title-strip labels: text lives on the directory's frame, never on
         // top of its contents.
-        labelHits.removeAll(keepingCapacity: true)
-        for label in labels {
+        for (label, text) in zip(labels, labelText) where needs(text.bounds) {
             if label.node < 0 {
-                // Free-space keeps a small floating tag (it has no frame).
-                let text = label.region.width > 130
-                    ? "Free space  ·  \(Fmt.size(model.freeBytes))" : "Free space"
-                let str = NSAttributedString(string: text, attributes: [
-                    .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-                    .foregroundColor: NSColor.white.withAlphaComponent(0.55),
-                ])
-                str.draw(at: CGPoint(x: label.region.minX + 8, y: label.region.minY + 6))
+                text.name.draw(at: CGPoint(x: label.region.minX + 8, y: label.region.minY + 6))
                 continue
             }
 
             let strip = label.strip
-            let hovered = label.node == hoveredLabel
+            let hovered = label.node == shown.label
             if hovered {
                 NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
                 NSBezierPath(rect: strip).fill()
             }
-            let nameStr = NSAttributedString(string: label.name, attributes: [
-                .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                .foregroundColor: NSColor.white.withAlphaComponent(hovered ? 1.0 : 0.92),
-            ])
+            let nameStr = hovered ? LabelText.name(label, hovered: true) : text.name
             var avail = strip.width - 12
             if strip.width > 175 {
                 // right-aligned size on roomy strips
-                let sizeStr = NSAttributedString(string: Fmt.size(tree.alloc[label.node]), attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
-                    .foregroundColor: NSColor.white.withAlphaComponent(hovered ? 0.95 : 0.60),
-                ])
-                let sw = sizeStr.size()
+                let sizeStr = hovered ? LabelText.size(label, tree: tree, hovered: true) : text.size!
+                let sw = hovered ? sizeStr.size() : text.sizeSize
                 sizeStr.draw(at: CGPoint(x: strip.maxX - sw.width - 6,
                                          y: strip.midY - sw.height / 2))
                 avail -= sw.width + 10
             }
-            let nh = nameStr.size().height
-            nameStr.draw(
-                with: CGRect(x: strip.minX + 6, y: strip.midY - nh / 2,
-                             width: max(0, avail), height: nh),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
-            )
-            labelHits.append((strip, label.node))
+            let nh = text.nameHeight
+            if text.nameWidth <= avail {
+                // Fits: skip the truncating typesetter (same glyphs, far cheaper).
+                nameStr.draw(at: CGPoint(x: strip.minX + 6, y: strip.midY - nh / 2))
+            } else {
+                nameStr.draw(
+                    with: CGRect(x: strip.minX + 6, y: strip.midY - nh / 2,
+                                 width: max(0, avail), height: nh),
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
+                )
+            }
         }
 
         // Hover: outline the file and its parent directory.
-        if let h = model.hovered, let r = leaves.first(where: { $0.node == h }) {
+        if let h = shown.hovered, let r = hoverRects(h) {
             NSColor.white.withAlphaComponent(0.9).setStroke()
-            let p = NSBezierPath(rect: r.rect.insetBy(dx: 0.5, dy: 0.5))
+            let p = NSBezierPath(rect: r.leaf.insetBy(dx: 0.5, dy: 0.5))
             p.lineWidth = 1
             p.stroke()
-            let parent = Int(tree.parents[h])
-            if let pr = rects.first(where: { $0.node == parent && $0.isDir }) {
+            if let pr = r.parent {
                 NSColor.white.withAlphaComponent(0.35).setStroke()
-                let pp = NSBezierPath(rect: pr.rect.insetBy(dx: 0.5, dy: 0.5))
+                let pp = NSBezierPath(rect: pr.insetBy(dx: 0.5, dy: 0.5))
                 pp.lineWidth = 1
                 pp.stroke()
             }
         }
         if !highlights.isEmpty {
-            if litRects == nil {
-                let wanted = Set(highlights)
-                litRects = rects.filter { wanted.contains($0.node) }.map { $0.rect.insetBy(dx: 0.5, dy: 0.5) }
-            }
+            if litRects == nil { litRects = Scan.lit(rects, highlights) }
             let lit = litRects ?? []
             if !lit.isEmpty {
                 let dim = NSBezierPath(rect: bounds)
@@ -479,9 +352,9 @@ final class TreemapNSView: NSView {
                 }
             }
         }
-        if let sel = model.selection, let r = rects.first(where: { $0.node == sel }) {
+        if let sel = shown.selection, let r = dirRect(sel) {
             NSColor.controlAccentColor.setStroke()
-            let p = NSBezierPath(rect: r.rect.insetBy(dx: 1, dy: 1))
+            let p = NSBezierPath(rect: r.insetBy(dx: 1, dy: 1))
             p.lineWidth = 2
             p.stroke()
         }
@@ -515,34 +388,40 @@ final class TreemapNSView: NSView {
 
     private func hit(_ point: CGPoint) -> TMRect? {
         // Files are disjoint; smallest matching leaf wins.
-        leafIndex.hit(point, leaves: leaves)
+        if leafIndex == nil { leafIndex = TMLeafIndex(leaves: leaves, size: lastSize) }
+        return leafIndex!.hit(point, leaves: leaves)
     }
 
-    private var hoveredLabel: Int? = nil
-
     override func mouseMoved(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        let lab = labelHits.first(where: { $0.rect.contains(p) })?.node
-        if lab != hoveredLabel {
-            hoveredLabel = lab
-            needsDisplay = true
+        hover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    @discardableResult
+    func hover(at p: CGPoint) -> [CGRect] {
+        let lab = Scan.hit(labelHits, p)
+        hoveredLabel = lab
+        let leaf = lab == nil ? hit(p) : nil
+        let node = lab ?? leaf?.node
+        if let leaf, let tree = model?.tree, leafMemo?.node != leaf.node {
+            remember(leaf, tree: tree, node: leaf.node) // saves the lookup when drawing
         }
-        let node = lab ?? hit(p)?.node
-        if node != model?.hovered {
+        if node != hoveredNode {
+            hoveredNode = node
             model?.hovered = node
             if let node, let tree = model?.tree {
                 toolTip = "\(tree.displayPath(node))\n\(Fmt.size(tree.alloc[node]))"
             } else {
                 toolTip = nil
             }
-            needsDisplay = true
         }
+        return syncOverlay()
     }
 
     override func mouseExited(with event: NSEvent) {
         model?.hovered = nil
+        hoveredNode = nil
         hoveredLabel = nil
-        needsDisplay = true
+        syncOverlay()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -551,8 +430,8 @@ final class TreemapNSView: NSView {
         guard let model, let tree = model.tree else { return }
         if event.clickCount == 2 {
             // Directory labels are zoom targets first.
-            if let lab = labelHits.first(where: { $0.rect.insetBy(dx: -2, dy: -2).contains(p) }) {
-                model.viewRoot = lab.node
+            if let lab = Scan.hit(labelHits, p, slop: 2) {
+                model.viewRoot = lab
                 relayout()
                 return
             }
@@ -565,12 +444,12 @@ final class TreemapNSView: NSView {
                 }
             }
         } else {
-            if let lab = labelHits.first(where: { $0.rect.contains(p) }) {
-                model.selection = lab.node
+            if let lab = Scan.hit(labelHits, p) {
+                model.selection = lab
             } else {
                 model.selection = hit(p)?.node
             }
-            needsDisplay = true
+            syncOverlay()
         }
     }
 
@@ -578,8 +457,43 @@ final class TreemapNSView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         guard let model, let tree = model.tree, let leaf = hit(p) else { return }
         model.selection = leaf.node
-        needsDisplay = true
+        syncOverlay()
         NodeMenu.popUp(path: tree.path(leaf.node), with: event, for: self)
+    }
+}
+
+/// Scans over the layout arrays, nonisolated on purpose: a closure written
+/// in the MainActor view checks its executor on every call, which made one
+/// pass over 40k directory rects cost milliseconds per mouse move.
+nonisolated private enum Scan {
+    static func leaf(_ leaves: [TMRect], _ node: Int) -> TMRect? {
+        leaves.first { $0.node == node }
+    }
+
+    static func dir(_ rects: [TMRect], _ node: Int) -> CGRect? {
+        rects.first { $0.node == node && $0.isDir }?.rect
+    }
+
+    static func lit(_ rects: [TMRect], _ nodes: [Int]) -> [CGRect] {
+        let wanted = Set(nodes)
+        return rects.filter { wanted.contains($0.node) }.map { $0.rect.insetBy(dx: 0.5, dy: 0.5) }
+    }
+
+    static func label(_ labels: [TMLabel], _ node: Int) -> Int? {
+        labels.firstIndex { $0.node == node }
+    }
+
+    static func hits(_ labels: [TMLabel]) -> [(rect: CGRect, node: Int)] {
+        labels.filter { $0.node >= 0 }.map { ($0.strip, $0.node) }
+    }
+
+    static func hit(_ hits: [(rect: CGRect, node: Int)], _ p: CGPoint, slop: CGFloat = 0) -> Int? {
+        slop == 0 ? hits.first { $0.rect.contains(p) }?.node
+            : hits.first { $0.rect.insetBy(dx: -slop, dy: -slop).contains(p) }?.node
+    }
+
+    static func intersects(_ rects: [CGRect], _ r: CGRect) -> Bool {
+        rects.contains { $0.intersects(r) }
     }
 }
 
@@ -639,14 +553,11 @@ struct TreemapView: NSViewRepresentable {
     func updateNSView(_ view: TreemapNSView, context: Context) {
         view.model = model
         view.relayoutIfNeeded()
+        view.syncOverlay() // e.g. a selection made in the list
         let lit = model.agentRun?.highlights(in: model.tree) ?? []
         if lit != view.highlights {
             view.highlights = lit
             view.needsDisplay = true
         }
-        // Observe list selections even when surrounding status UI updates
-        // independently; the overlay redraw does not rebuild the bitmap.
-        _ = model.selection
-        view.needsDisplay = true
     }
 }

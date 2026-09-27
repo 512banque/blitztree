@@ -153,34 +153,54 @@ enum Fmt {
         switch hit { case .center: -2; case .segment(let i): i; case nil: -1 }
     }
 
+    /// The baseline's cushion painter over the whole bitmap in one band.
+    static func legacyCushions(_ tree: Tree, pw: Int, ph: Int, scale: CGFloat, root: Int,
+                               free: Bool) -> (pixels: [UInt32], leaves: Int, labels: Int) {
+        // BASELINE-PAINTER-BEGIN
+        let oldOut = LegacyTreemapNSView.RenderOutput()
+        let oldOps = LegacyTreemapNSView.layoutOps(tree: tree, pw: pw, ph: ph, scale: scale, root: root,
+                                                  showFree: free, freeBytes: tree.alloc[0] / 3, out: oldOut)
+        var a = [UInt32](repeating: 0xFF16_1616, count: pw * ph)
+        a.withUnsafeMutableBufferPointer { pixels in
+            oldOps.withUnsafeBufferPointer { LegacyTreemapNSView.paint($0, base: pixels.baseAddress!, pw: pw, ph: ph, rows: 0..<ph) }
+        }
+        return (a, oldOut.leaves.count, oldOut.labels.count)
+        // BASELINE-PAINTER-END
+    }
+
+    /// The candidate's layout, painted in `bands` separate row ranges.
+    static func cushions(_ tree: Tree, pw: Int, ph: Int, scale: CGFloat, root: Int,
+                         free: Bool, bands: Int) -> (pixels: [UInt32], leaves: Int, labels: Int) {
+        var layout = TreemapRenderer.Layout(tree: tree, pw: pw, ph: ph, scale: scale,
+                                            showFree: free, freeBytes: tree.alloc[0] / 3)
+        layout.draw(root, CGRect(x: 0, y: 0, width: pw, height: ph),
+                    TreemapRenderer.Cushion.baseHeight, TreemapRenderer.Surface(), 0)
+        var b = [UInt32](repeating: 0, count: pw * ph) // the painter writes every pixel
+        b.withUnsafeMutableBufferPointer { pixels in
+            layout.ops.withUnsafeBufferPointer { ops in
+                layout.shades.withUnsafeBufferPointer { shades in
+                    for i in 0..<bands {
+                        TreemapRenderer.paint(ops, shades, base: pixels.baseAddress!, pw: pw,
+                                              rows: (ph * i / bands)..<(ph * (i + 1) / bands))
+                    }
+                }
+            }
+        }
+        return (b, layout.leaves.count, layout.labels.count)
+    }
+
     static func verifyCushions(_ tree: Tree, seed: Int) {
         let pw = 13 + seed * 313 % 1103, ph = 7 + seed * 997 % 787
         let scale: CGFloat = seed % 2 == 0 ? 1 : 2
         let root = seed % 3 == 0 ? (tree.children(0).first.map(Int.init) ?? 0) : 0
-        let out = TreemapNSView.RenderOutput(), oldOut = LegacyTreemapNSView.RenderOutput()
-        let ops = TreemapNSView.layoutOps(tree: tree, pw: pw, ph: ph, scale: scale, root: root,
-                                         showFree: seed % 5 == 0, freeBytes: tree.alloc[0] / 3, out: out)
-        let oldOps = LegacyTreemapNSView.layoutOps(tree: tree, pw: pw, ph: ph, scale: scale, root: root,
-                                                  showFree: seed % 5 == 0, freeBytes: tree.alloc[0] / 3, out: oldOut)
-        var a = [UInt32](repeating: 0xFF16_1616, count: pw * ph), b = a
-        a.withUnsafeMutableBufferPointer { pixels in
-            oldOps.withUnsafeBufferPointer { LegacyTreemapNSView.paint($0, base: pixels.baseAddress!, pw: pw, ph: ph, rows: 0..<ph) }
-        }
-        b.withUnsafeMutableBufferPointer { pixels in
-            ops.withUnsafeBufferPointer { buffer in
-                // Different partitions verify edge handling between painter bands.
-                let bands = seed % 7 + 1
-                for i in 0..<bands {
-                    TreemapNSView.paint(buffer, base: pixels.baseAddress!, pw: pw, ph: ph,
-                                        rows: (ph * i / bands)..<(ph * (i + 1) / bands))
-                }
-            }
-        }
-        if a != b {
-            let differing = zip(a, b).filter { $0 != $1 }.count
+        let old = legacyCushions(tree, pw: pw, ph: ph, scale: scale, root: root, free: seed % 5 == 0)
+        // Different partitions verify edge handling between painter bands.
+        let new = cushions(tree, pw: pw, ph: ph, scale: scale, root: root, free: seed % 5 == 0, bands: seed % 7 + 1)
+        if old.pixels != new.pixels {
+            let differing = zip(old.pixels, new.pixels).filter { $0 != $1 }.count
             fatalError("cushion seed \(seed) root \(root) scale \(scale): \(differing) differing pixels")
         }
-        precondition(out.leaves.count == oldOut.leaves.count && out.labels.count == oldOut.labels.count)
+        precondition(new.leaves == old.leaves && new.labels == old.labels)
     }
 
     static func verifyCoverage() {
@@ -196,14 +216,16 @@ enum Fmt {
                 i % 5 == 0 ? 0.000001 : Double(1 + next() % (seed % 2 == 0 ? 1_000_000_000_000_000_000 : 100_000))
             }.sorted(by: >)
             let items = weights.enumerated().map { (node: $0.offset, size: $0.element) }
-            let layout = Squarify.layoutItems(items, rect: rect)
+            var tiles: [Squarify.Placed] = []
+            let coversBounds = Squarify.layoutItems(items, rect: rect, into: &tiles)
             let legacy = LegacySquarify.layoutItems(items, rect: rect)
-            precondition(layout.tiles.count == legacy.count)
-            for (a, b) in zip(layout.tiles, legacy) { precondition(a.node == b.node && a.rect == b.rect) }
-            if !layout.coversBounds { continue }
+            precondition(tiles.count == legacy.count)
+            for (a, b) in zip(tiles, legacy) { precondition(a.node == b.node && a.rect == b.rect) }
+            precondition(coversBounds == LegacySquarify.layoutItems(items, rect: rect).coversBounds) // baseline reports coverage
+            if !coversBounds { continue }
             let width = Int(ceil(rect.maxX)) + 1, height = Int(ceil(rect.maxY)) + 1
             var covered = [Bool](repeating: false, count: width * height)
-            for (_, tile) in layout.tiles where tile.width >= 0.5 && tile.height >= 0.5 {
+            for (_, tile) in tiles where tile.width >= 0.5 && tile.height >= 0.5 {
                 for y in Int(tile.minY.rounded())..<Int(tile.maxY.rounded()) {
                     for x in Int(tile.minX.rounded())..<Int(tile.maxX.rounded()) { covered[y * width + x] = true }
                 }
@@ -270,26 +292,11 @@ enum Fmt {
             let tree = Tree(kind: "flat")
             var sink = 0
             for _ in 0..<15 {
-                let out = TreemapNSView.RenderOutput()
-                var ops: [TreemapNSView.PaintOp] = []
-                let layout = ms { ops = TreemapNSView.layoutOps(tree: tree, pw: 2880, ph: 1800, scale: 2, root: 0, showFree: true, freeBytes: tree.alloc[0] / 3, out: out) }
-                let index = ms { sink += TMLeafIndex(leaves: out.leaves, size: CGSize(width: 1440, height: 900)).cells.count }
-                let bands = min(ProcessInfo.processInfo.activeProcessorCount * 3, 1800 / 32)
-                var pixels = [UInt32](repeating: 0xFF16_1616, count: 2880 * 1800)
-                let paint = ms {
-                    ops.withUnsafeBufferPointer { ops in
-                        pixels.withUnsafeMutableBufferPointer { buffer in
-                            nonisolated(unsafe) let base = buffer.baseAddress!
-                            nonisolated(unsafe) let operations = ops
-                            DispatchQueue.concurrentPerform(iterations: bands) { band in
-                                TreemapNSView.paint(operations, base: base, pw: 2880, ph: 1800,
-                                                    rows: (1800 * band / bands)..<(1800 * (band + 1) / bands))
-                            }
-                        }
-                    }
-                }
-                print("phase,treemap,layout,\(layout),index,\(index),paint,\(paint)")
-                sink += pixels.count
+                let r = TreemapRenderer.render(tree: tree, pw: 2880, ph: 1800, scale: 2, root: 0,
+                                               showFree: true, freeBytes: tree.alloc[0] / 3)
+                let index = ms { sink += TMLeafIndex(leaves: r.leaves, size: CGSize(width: 1440, height: 900)).cells.count }
+                print("phase,treemap,layout,\(r.layoutMs),index,\(index),paint,\(r.paintMs)")
+                sink += r.image.width
             }
             precondition(sink > 0)
             return
@@ -385,7 +392,7 @@ enum Fmt {
             let sb = SunburstNSView(frame: frame), oldSB = LegacySunburstNSView(frame: frame)
             tm.model = model; oldTM.model = model; sb.model = model; oldSB.model = model
             for (label, before, after) in [
-                ("treemap_\(kind)_2880x1800", { oldTM.relayout() }, { tm.relayout() }),
+                ("treemap_\(kind)_2880x1800", { oldTM.relayout(); _ = oldTM.hit(.zero) }, { tm.relayout(); _ = tm.hit(.zero) }),
                 ("sunburst_\(kind)_2880x1800", { oldSB.relayout() }, { sb.relayout() }),
             ] {
                 measure(label, before: before, after: after)
