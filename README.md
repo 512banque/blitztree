@@ -4,7 +4,10 @@
 
 A fast, native disk-space treemap for macOS, in the spirit of WizTree. It scans a whole Mac (3.6M files) in about 14 seconds.
 
-![BlitzTree scanning /Applications](assets/screenshot.png)
+<p>
+  <img src="assets/screenshot.png" width="49%" alt="BlitzTree treemap view of /Applications">
+  <img src="assets/screenshot-rings.png" width="49%" alt="BlitzTree rings view of /Applications">
+</p>
 
 ## Install
 
