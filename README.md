@@ -21,10 +21,10 @@ Signed with a Developer ID and notarized by Apple, so it opens like any other ap
 - Prefer DaisyDisk? Switch to rings in the toolbar: click a folder to zoom in, the middle to go back
 - Zoom into folders, reveal in Finder, or move to Trash (with confirmation)
 - Clean Up panel: finds folders that are safe to delete (caches, `node_modules`, Rust `target`, Xcode DerivedData and more) so you can trash them in one go
-- AI cleanup: after each launch scan, your own Claude Code or Codex plans what can go, live in the panel, while the treemap lights up those folders. BlitzTree does the cleanup itself, in two steps you approve: move to Trash, then delete for good. No agent installed? One click sets up Codex (free with a ChatGPT account) or Claude Code
+- AI cleanup: click "Clean up with Claude Code" (or Codex) and your own agent plans what can go, live in the panel, while the treemap lights up those folders. BlitzTree does the cleanup itself, in two steps you approve: move to Trash, then delete for good. No agent installed? One click sets up Codex (free with a ChatGPT account) or Claude Code
 - Live progress while scanning, and an optional free-space block
 - Native AppKit/SwiftUI, with the Liquid Glass design on macOS 26 and later
-- No telemetry. BlitzTree itself never goes online; the AI cleanup runs your own agent, which sends folder paths and sizes from the scan (never file contents) to Anthropic or OpenAI
+- No telemetry. BlitzTree itself never goes online; the AI cleanup only runs when you click it, using your own agent, which sends folder paths and sizes from the scan (never file contents) to Anthropic or OpenAI
 
 ## Performance
 

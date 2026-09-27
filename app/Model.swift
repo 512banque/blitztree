@@ -180,8 +180,8 @@ final class ScanModel {
     var agentRun: AgentRun?
     /// An agent being installed or signed in from the panel.
     var agentSetup: AgentSetup?
-    /// The first scan after launch hands itself to the agent once.
-    private var autoStarted = false
+    /// The first scan after launch opens the Clean Up panel once.
+    private var panelOpenedAfterLaunch = false
 
     /// The agent to use: the one picked last, else Claude Code, else Codex.
     var preferredAgent: InstalledAgent? {
@@ -201,19 +201,15 @@ final class ScanModel {
         withAnimation(.snappy) { agentRun = run }
     }
 
-    /// After the launch scan: start the agent straight away when one is ready,
-    /// else open the panel on the setup offer.
-    func autoStartIfReady() {
-        guard !autoStarted, agentEnv.loaded, tree != nil, !scanning,
+    /// After the launch scan: open the panel on the Clean Up button or the
+    /// setup offer. Nothing goes to an agent until the user clicks.
+    func openPanelAfterLaunchScan() {
+        guard !panelOpenedAfterLaunch, agentEnv.loaded, tree != nil, !scanning,
               !cleanupTrash.running, agentRun == nil else { return }
-        autoStarted = true
-        if let agent = preferredAgent {
-            startAgent(agent)
-        } else {
-            panelRequests += 1
-            // QA only: BZ_QA_SETUP=claude|codex presses the setup button.
-            if let kind = ProcessInfo.processInfo.environment["BZ_QA_SETUP"].flatMap(AgentKind.init) { setUp(kind) }
-        }
+        panelOpenedAfterLaunch = true
+        panelRequests += 1
+        // QA only: BZ_QA_SETUP=claude|codex presses the setup button.
+        if preferredAgent == nil, let kind = ProcessInfo.processInfo.environment["BZ_QA_SETUP"].flatMap(AgentKind.init) { setUp(kind) }
     }
 
     /// Bumped to ask the window to open the Clean Up panel.
@@ -352,7 +348,7 @@ final class ScanModel {
                 // Node IDs only belong to the scan that produced them.
                 guard self.tree === tree else { return }
                 cleanup = found
-                autoStartIfReady()
+                openPanelAfterLaunchScan()
             }
             NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
         }

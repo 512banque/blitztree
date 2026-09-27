@@ -65,7 +65,7 @@ struct ContentView: View {
         .toolbar { toolbar }
         .task {
             model.agentEnv = await AgentLocator.find()
-            model.autoStartIfReady()
+            model.openPanelAfterLaunchScan()
         }
         // An agent run or the setup offer always shows in the panel.
         .onChange(of: model.agentRun == nil) { if model.agentRun != nil { showCleanup = true } }

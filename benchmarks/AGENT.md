@@ -15,7 +15,7 @@ work on already-scanned data, not scanning or agent response/network latency.
 
 The benchmark makes no agent, auth, or network calls and never moves anything
 to the user's Trash. Its frozen source copy replaces only the process launch
-call and automatic-start dispatch with counters and the manual Trash operation
+call and agent starts with counters and the manual Trash operation
 with a controlled fake.
 A test-only gate pauses prompt generation to force cancellation at the exact
 race boundary. Production sources contain no injected launch/trash hooks.
@@ -39,10 +39,11 @@ Correctness checks include:
   actor continues handling work. The batch rejects duplicate starts, preserves
   its captured selection and individual failures, clears busy state, and
   invokes the completion/rescan callback exactly once. Becoming ready during a
-  busy cleanup does not consume or duplicate the model's one-shot automatic
-  agent startup. Cleanup failures remain on the model-owned controller after
-  the inspector's callback is discarded and after a later successful batch;
-  only explicit dismissal clears them.
+  busy cleanup does not consume or duplicate the model's one-shot launch
+  panel, and the launch scan never starts an agent without a click. Cleanup
+  failures remain on the model-owned controller after the inspector's
+  callback is discarded and after a later successful batch; only explicit
+  dismissal clears them.
 
 The timed cases cover a normal 12-item plan, a larger plan grouping 144 paths
 whose individual lengths remain under macOS path limits, 4,000 notifications
