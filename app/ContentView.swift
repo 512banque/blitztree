@@ -414,7 +414,10 @@ final class ValueCell: NSTableCellView {
 struct OutlinePanel: NSViewRepresentable {
     let model: ScanModel
 
-    final class Item {
+    /// An NSObject so the outline hashes and compares items by pointer: as a
+    /// plain Swift class every lookup went through the Swift runtime's
+    /// conformance checks, a third of expanding a 100k-item folder.
+    final class Item: NSObject {
         private(set) var id: Int
         private(set) var tree: Tree
         private var kids: [Item]?

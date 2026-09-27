@@ -42,6 +42,9 @@ final class SunburstNSView: NSView {
     private var lastShowFree = false
     private var hoveredSegment: Int?
     private var hoveringCenter = false
+    private var sizeFont: NSFont?
+    private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private static let detailFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 
     override var isFlipped: Bool { true }
 
@@ -460,19 +463,23 @@ final class SunburstNSView: NSView {
         let para = NSMutableParagraphStyle()
         para.alignment = .center
         para.lineBreakMode = .byTruncatingMiddle
+        // A new rounded font every frame had AppKit look up a font instance
+        // (disk included) on each hover; it only changes with the window size.
+        let sizePt = min(26, max(15, radii[0] / 4.2))
+        if sizeFont?.pointSize != sizePt { sizeFont = NSFont.systemFont(ofSize: sizePt, weight: .semibold).rounded() }
         let lines: [NSAttributedString] = [
             NSAttributedString(string: title, attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .font: Self.titleFont,
                 .foregroundColor: NSColor.white.withAlphaComponent(0.72),
                 .paragraphStyle: para,
             ]),
             NSAttributedString(string: Fmt.size(size), attributes: [
-                .font: NSFont.systemFont(ofSize: min(26, max(15, radii[0] / 4.2)), weight: .semibold).rounded(),
+                .font: sizeFont!,
                 .foregroundColor: NSColor.white,
                 .paragraphStyle: para,
             ]),
         ] + (detail.map { [NSAttributedString(string: $0, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .font: Self.detailFont,
             .foregroundColor: NSColor.white.withAlphaComponent(0.45),
             .paragraphStyle: para,
         ])] } ?? [])
