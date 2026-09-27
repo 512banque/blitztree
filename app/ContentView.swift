@@ -56,6 +56,13 @@ struct ContentView: View {
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 520)
         }
         .toolbar { toolbar }
+        .task {
+            model.agentEnv = await AgentLocator.find()
+            model.autoStartIfReady()
+        }
+        // An agent run or the setup offer always shows in the panel.
+        .onChange(of: model.agentRun == nil) { if model.agentRun != nil { showCleanup = true } }
+        .onChange(of: model.panelRequests) { showCleanup = true }
         .hidingWindowTitle()
         .onAppear {
             // Never start a whole-disk scan without FDA: every protected

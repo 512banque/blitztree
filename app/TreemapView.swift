@@ -10,6 +10,10 @@ final class TreemapNSView: NSView {
         didSet { if model !== oldValue { relayout() } }
     }
 
+    /// Folders an agent plan would remove: lit while the rest dims.
+    var highlights: [Int] = [] { didSet { litRects = nil } }
+    /// Their rects in the current layout, found once per change, not per frame.
+    private var litRects: [CGRect]?
     private var rects: [TMRect] = []
     private var leaves: [TMRect] = [] // files only, for hit-testing
     /// `strip` is the title bar (text + hit target); `region` is the whole
@@ -146,6 +150,7 @@ final class TreemapNSView: NSView {
         }
         rects = out.rects
         leaves = out.leaves
+        litRects = nil
         labels = out.labels
 
         let data = pixels.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -435,6 +440,26 @@ final class TreemapNSView: NSView {
                 pp.stroke()
             }
         }
+        if !highlights.isEmpty {
+            if litRects == nil {
+                let wanted = Set(highlights)
+                litRects = rects.filter { wanted.contains($0.node) }.map { $0.rect.insetBy(dx: 0.5, dy: 0.5) }
+            }
+            let lit = litRects ?? []
+            if !lit.isEmpty {
+                let dim = NSBezierPath(rect: bounds)
+                for r in lit { dim.append(NSBezierPath(rect: r)) }
+                dim.windingRule = .evenOdd
+                NSColor.black.withAlphaComponent(0.55).setFill()
+                dim.fill()
+                NSColor.controlAccentColor.setStroke()
+                for r in lit {
+                    let p = NSBezierPath(rect: r)
+                    p.lineWidth = 1.5
+                    p.stroke()
+                }
+            }
+        }
         if let sel = model.selection, let r = rects.first(where: { $0.node == sel }) {
             NSColor.controlAccentColor.setStroke()
             let p = NSBezierPath(rect: r.rect.insetBy(dx: 1, dy: 1))
@@ -592,5 +617,10 @@ struct TreemapView: NSViewRepresentable {
     func updateNSView(_ view: TreemapNSView, context: Context) {
         view.model = model
         view.relayoutIfNeeded()
+        let lit = model.agentRun?.highlights(in: model.tree) ?? []
+        if lit != view.highlights {
+            view.highlights = lit
+            view.needsDisplay = true
+        }
     }
 }

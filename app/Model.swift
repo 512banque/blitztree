@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Foundation
 import Observation
 
@@ -145,6 +146,60 @@ final class ScanModel {
         // Whole disk by default: the user-data volume of the boot volume group.
         return "/System/Volumes/Data"
     }()
+    /// Coding agents found on this Mac (Claude Code, Codex) and the user's PATH.
+    var agentEnv = AgentEnvironment()
+    /// The agent cleanup on screen, if any.
+    var agentRun: AgentRun?
+    /// An agent being installed or signed in from the panel.
+    var agentSetup: AgentSetup?
+    /// The first scan after launch hands itself to the agent once.
+    private var autoStarted = false
+
+    /// The agent to use: the one picked last, else Claude Code, else Codex.
+    var preferredAgent: InstalledAgent? {
+        let ready = agentEnv.ready
+        let picked = UserDefaults.standard.string(forKey: "bz.agent")
+        return ready.first { $0.kind.rawValue == picked } ?? ready.first { $0.kind == .claude } ?? ready.first
+    }
+
+    func startAgent(_ agent: InstalledAgent) {
+        guard let tree, !scanning else { return }
+        UserDefaults.standard.set(agent.kind.rawValue, forKey: "bz.agent")
+        agentRun?.cancel()
+        let run = AgentRun(agent: agent, env: agentEnv, tree: tree, scanRoot: scanRoot, known: cleanup) { [weak self] in
+            guard let self, !self.scanning else { return }
+            self.startScan()
+        }
+        withAnimation(.snappy) { agentRun = run }
+    }
+
+    /// After the launch scan: start the agent straight away when one is ready,
+    /// else open the panel on the setup offer.
+    func autoStartIfReady() {
+        guard !autoStarted, agentEnv.loaded, tree != nil, !scanning, agentRun == nil else { return }
+        autoStarted = true
+        if let agent = preferredAgent {
+            startAgent(agent)
+        } else {
+            panelRequests += 1
+            // QA only: BZ_QA_SETUP=claude|codex presses the setup button.
+            if let kind = ProcessInfo.processInfo.environment["BZ_QA_SETUP"].flatMap(AgentKind.init) { setUp(kind) }
+        }
+    }
+
+    /// Bumped to ask the window to open the Clean Up panel.
+    var panelRequests = 0
+
+    func setUp(_ kind: AgentKind) {
+        agentSetup?.cancel()
+        let installed = agentEnv.agents.first { $0.kind == kind }
+        agentSetup = AgentSetup(kind: kind, installed: installed, envPath: agentEnv.path) { [weak self] env in
+            guard let self else { return }
+            agentEnv = env
+            agentSetup = nil
+            if let agent = env.ready.first(where: { $0.kind == kind }) { startAgent(agent) }
+        }
+    }
     /// A tree has been shown at least once, so the views exist (see ContentView).
     var hasShownTree = false
     var viewRoot: Int = 0
@@ -224,6 +279,7 @@ final class ScanModel {
             if let tree {
                 Task {
                     cleanup = await Task.detached(priority: .userInitiated) { Cleanup.find(in: tree) }.value
+                    autoStartIfReady()
                 }
                 NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
             }

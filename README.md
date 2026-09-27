@@ -17,9 +17,10 @@ The app is not notarized. On first launch, allow it in System Settings → Priva
 - Cushion-shaded treemap colored by file type, with a synced Finder-style outline list
 - Zoom into folders, reveal in Finder, or move to Trash (with confirmation)
 - Clean Up panel: finds folders that are safe to delete (caches, `node_modules`, Rust `target`, Xcode DerivedData and more) so you can trash them in one go
+- AI cleanup: after each launch scan, your own Claude Code or Codex plans what can go, live in the panel, while the treemap lights up those folders. BlitzTree does the cleanup itself, in two steps you approve: move to Trash, then delete for good. No agent installed? One click sets up Codex (free with a ChatGPT account) or Claude Code
 - Live progress while scanning, and an optional free-space block
 - Native AppKit/SwiftUI, with the Liquid Glass design on macOS 26 and later
-- No network access, no telemetry
+- No telemetry. BlitzTree itself never goes online; the AI cleanup runs your own agent, which sends folder paths and sizes from the scan (never file contents) to Anthropic or OpenAI
 
 ## Performance
 
@@ -38,6 +39,15 @@ Method, full results and a comparison with other tools: [BENCHMARKS.md](BENCHMAR
 ## Accuracy
 
 Sizes are allocated bytes, matching `du`. Hard-linked files count once, the scan stays on one volume, and cloud-only iCloud folders are never downloaded. Root-only system data that no app can read is reported in the status bar instead of hidden.
+
+## AI cleanup
+
+The agent runs headless and read-only: it only writes a plan from the scan BlitzTree already has. BlitzTree then acts on it behind its own checks, whatever the plan says:
+
+- Only paths inside your home folder, never Documents, Desktop, Photos, iCloud Drive, Mail, keychains or `~/.ssh` (build output such as `node_modules` inside them is allowed), never a git repository or a whole folder like `~/Library/Caches`
+- Only each tool's own cache cleanup commands (`uv cache clean`, `brew cleanup`, `npm cache clean` and similar), with no shell syntax
+- Caches of apps that are open are skipped until you quit them
+- "Delete for good" removes only what this cleanup moved to the Trash
 
 ## Build from source
 
