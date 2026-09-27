@@ -54,7 +54,15 @@ xcrun actool "$PWD/assets/AppIcon.icon" --compile "$PWD/$APP/Contents/Resources"
     --platform macosx --target-device mac --minimum-deployment-target $MIN_MACOS \
     --app-icon AppIcon --output-partial-info-plist "$PWD/build/icon-partial.plist" >/dev/null
 
-# Prefer a real identity: stable code requirement -> TCC/FDA grants survive rebuilds.
-IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $2; exit}')
-codesign --force --sign "${IDENTITY:--}" "$APP"
+# Prefer a real identity: stable code requirement -> TCC/FDA grants survive
+# rebuilds. Developer ID (paid program) with the hardened runtime and a secure
+# timestamp is what notarization needs; Apple Development is the fallback.
+IDS=$(security find-identity -v -p codesigning 2>/dev/null)
+IDENTITY=$(awk -F'"' '/Developer ID Application/{print $2; exit}' <<<"$IDS")
+if [[ -n "$IDENTITY" ]]; then
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+else
+    IDENTITY=$(awk -F'"' '/Apple Development/{print $2; exit}' <<<"$IDS")
+    codesign --force --sign "${IDENTITY:--}" "$APP"
+fi
 echo "==> Built $APP"
