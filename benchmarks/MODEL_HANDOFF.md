@@ -16,6 +16,22 @@ Run the regression check with:
 python3 benchmarks/model-handoff.py --output /tmp/blitztree-model-handoff
 ```
 
+Capacity arriving after the tree also invalidates the existing treemap and
+ring bitmaps when free space is displayed. The rendering harness checks delayed
+capacity, subsequent changes/reset, cache reuse when capacity is unchanged or
+hidden, and the latest capacity after returning to the root. It preserves the
+existing zoom behavior: treemap shows free space in subfolders too, while rings
+only show it at the scan root.
+Capacity is a value input to both SwiftUI representables so its arrival also
+schedules an update of the native views.
+
+```sh
+python3 benchmarks/rendering.py --baseline bf3b1fc --check-only
+```
+
+This also checks unchanged pixels, geometry and hit testing against v0.5.2;
+the existing layouts and visual styles are preserved.
+
 `--measure` injects a 1.5-second volume delay and prints tree, scan-complete,
 and capacity-application times. `--ref 6e8483a` builds the baseline
 `app/Model.swift` with the same current agent/cleanup sources and the same
