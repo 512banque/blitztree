@@ -337,6 +337,9 @@ nonisolated enum CleanupGuard {
             }
         }
         if FileManager.default.fileExists(atPath: p + "/.git") { return "A git repository" }
+        // Apple's own app data refuses to move and is rebuilt by macOS anyway.
+        if p.contains("/Library/Containers/com.apple.") || p.contains("/Library/Caches/com.apple.")
+            || p.contains("/Library/Group Containers/group.com.apple.") { return "Managed by macOS" }
         return nil
     }
 
@@ -348,6 +351,33 @@ nonisolated enum CleanupGuard {
         let banned = [";", "|", "&", ">", "<", "`", "$", "\n", "*", "\\"]
         if banned.contains(where: { c.contains($0) }) { return "Command not allowed" }
         return nil
+    }
+
+    /// Whether the project owning this build folder was used in the last two
+    /// days: its git index (touched by every status, commit or checkout), the
+    /// project folder or the folder itself changed recently.
+    static func recentlyUsed(_ path: String, within: TimeInterval = 2 * 86400) -> Bool {
+        let fm = FileManager.default
+        let url = URL(fileURLWithPath: path)
+        guard rebuildable.contains(url.lastPathComponent) else { return false }
+        let project = url.deletingLastPathComponent()
+        var stamps = [path, project.path]
+        let git = project.appendingPathComponent(".git")
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: git.path, isDirectory: &isDir) {
+            if isDir.boolValue {
+                stamps.append(git.appendingPathComponent("index").path)
+            } else if let text = try? String(contentsOf: git, encoding: .utf8),
+                      let line = text.split(separator: "\n").first(where: { $0.hasPrefix("gitdir:") }) {
+                // A worktree: its index lives in the main repository.
+                let dir = line.dropFirst(7).trimmingCharacters(in: .whitespaces)
+                stamps.append(URL(fileURLWithPath: dir, relativeTo: project).appendingPathComponent("index").path)
+            }
+        }
+        let cutoff = Date().addingTimeInterval(-within)
+        return stamps.contains { p in
+            ((try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date).map { $0 > cutoff } ?? false
+        }
     }
 
     /// An app that must be quit before its files go, when one is running.
@@ -392,14 +422,46 @@ final class PlanItem: Identifiable {
     /// Its folders in the scan the plan was made from, for the treemap.
     let nodes: [Int]
 
+    /// Why some of its folders were left out, shown under the card.
+    let note: String?
+    /// A tool cache that is only a folder: trashed and deleted like one.
+    let viaTrash: Bool
+
     init(spec: PlanItemSpec, tree: Tree) {
         self.spec = spec
-        let asked = spec.paths.map { ($0 as NSString).expandingTildeInPath }
+        var asked = spec.paths.map { ($0 as NSString).expandingTildeInPath }
+        // A known tool cache named without its folder: use the standard one,
+        // so its size is measured instead of guessed.
+        if spec.action == "command", asked.isEmpty {
+            let home = NSHomeDirectory()
+            let known: [(String, String)] = [
+                ("uv cache", "\(home)/.cache/uv"), ("npm cache", "\(home)/.npm/_cacache"),
+                ("bun pm cache", "\(home)/.bun/install/cache"), ("pip cache", "\(home)/Library/Caches/pip"),
+                ("pip3 cache", "\(home)/Library/Caches/pip"), ("yarn cache", "\(home)/Library/Caches/Yarn"),
+            ]
+            if let hit = known.first(where: { spec.command.hasPrefix($0.0) }) { asked = [hit.1] }
+        }
         var reason: String?
         var kept: [String] = []
-        if spec.action == "command" {
+        var recent = 0
+        // A cache that is just a folder goes through the Trash and BlitzTree's
+        // parallel delete: reversible in step one, and faster than the tool's
+        // own single-threaded removal (bun took 20 s for 5 GB).
+        let plainCache = ["bun pm cache rm", "npm cache clean", "uv cache clean", "pip cache purge",
+                          "pip3 cache purge", "yarn cache clean"]
+        let trashable = spec.action == "command" && !asked.isEmpty
+            && plainCache.contains { spec.command.hasPrefix($0) }
+            && asked.allSatisfy { CleanupGuard.blockReason(path: $0) == nil && FileManager.default.fileExists(atPath: $0) }
+        viaTrash = trashable
+        if spec.action == "command" && !trashable {
             reason = CleanupGuard.blockReason(command: spec.command)
+            // A tool cache whose folders are all gone has nothing left to clear.
+            if reason == nil, !asked.isEmpty, asked.allSatisfy({ !FileManager.default.fileExists(atPath: $0) }) {
+                reason = "Already clean"
+            }
             kept = asked
+        } else if asked.isEmpty {
+            reason = "Nothing to remove"
         } else {
             // Paths BlitzTree won't touch are dropped; the card is blocked only
             // when nothing is left.
@@ -408,10 +470,14 @@ final class PlanItem: Identifiable {
                     reason = reason ?? why
                 } else if let app = CleanupGuard.runningOwner(of: [path]) {
                     reason = reason ?? "Quit \(app) to clean this"
-                } else if FileManager.default.fileExists(atPath: path) {
-                    kept.append(path)
-                } else {
+                } else if !FileManager.default.fileExists(atPath: path) {
                     reason = reason ?? "Already gone"
+                } else if CleanupGuard.recentlyUsed(path) {
+                    // Never break what the user is working on right now.
+                    recent += 1
+                    reason = reason ?? "In projects you used in the last 2 days"
+                } else {
+                    kept.append(path)
                 }
             }
             if !kept.isEmpty { reason = nil }
@@ -419,16 +485,18 @@ final class PlanItem: Identifiable {
         paths = kept.isEmpty ? asked : kept
         blocked = reason
         selected = reason == nil && spec.group == "safe"
+        note = recent > 0 && !kept.isEmpty
+            ? "Keeps \(recent) project\(recent == 1 ? "" : "s") you used in the last 2 days" : nil
 
         // Measured sizes, not counting a path inside another listed one twice.
         let nodes = Set(paths.compactMap { tree.node(at: $0) })
         let outer = nodes.filter { node in !tree.ancestry(node).dropLast().contains(where: nodes.contains) }
         let measured = outer.reduce(UInt64(0)) { $0 + tree.alloc[$1] }
         self.nodes = Array(outer)
-        bytes = spec.action == "trash" && measured > 0 ? measured : UInt64(max(0, spec.bytes))
+        bytes = measured > 0 ? measured : UInt64(max(0, spec.bytes))
     }
 
-    var isCommand: Bool { spec.action == "command" }
+    var isCommand: Bool { spec.action == "command" && !viaTrash }
 }
 
 @Observable
@@ -486,6 +554,9 @@ final class AgentRun {
     }
     /// The items the user chose and BlitzTree may touch.
     var targets: [PlanItem] { items.filter { $0.selected && $0.blocked == nil } }
+
+    /// Space the disk actually got back (statfs), set when deleting ends.
+    private(set) var reclaimed: UInt64?
 
     var selectedBytes: UInt64 { items.filter(\.selected).reduce(0) { $0 + $1.bytes } }
     var freed: UInt64 { items.reduce(0) { $0 + $1.freed } }
@@ -644,69 +715,125 @@ final class AgentRun {
         guard phase == .planned else { return }
         phase = .trashing
         for item in items where !(item.selected && item.blocked == nil) { item.status = .skipped }
+        let work = targets.filter { !$0.isCommand }
+        for item in work { item.status = .running }
         Task {
-            for item in targets where !item.isCommand {
-                current = item.id
-                item.status = .running
-                if dryRun {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    item.trashedBytes = item.bytes
-                    item.status = .inTrash
-                    continue
-                }
-                var failures: [String] = []
-                for path in item.paths where FileManager.default.fileExists(atPath: path) {
-                    do {
-                        var out: NSURL?
-                        try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &out)
-                        if let out { item.trashed.append(out as URL) }
-                    } catch {
-                        failures.append(error.localizedDescription)
+            // Moving to the Trash is a rename; all of them at once, off the main thread.
+            await withTaskGroup(of: Void.self) { group in
+                for item in work {
+                    let paths = item.paths
+                    let dryRun = dryRun
+                    group.addTask {
+                        let result = dryRun ? (moved: [URL](), error: String?.none) : await Self.trash(paths)
+                        await MainActor.run {
+                            item.trashed = result.moved
+                            item.trashedBytes = dryRun || !result.moved.isEmpty ? item.bytes : 0
+                            withAnimation(.snappy) { item.status = result.error.map { .failed($0) } ?? .inTrash }
+                        }
                     }
                 }
-                item.trashedBytes = item.trashed.isEmpty ? 0 : item.bytes
-                item.status = failures.isEmpty ? .inTrash : .failed(failures[0])
             }
-            current = nil
             withAnimation(.snappy) { phase = .staged }
         }
     }
 
     /// Step two: delete for good what step one trashed, and run the tools'
     /// own cache cleanups. Only this run's items; the rest of the Trash stays.
+    /// Everything runs at once: folder deletes spread over every core.
     func deleteForGood(env: AgentEnvironment) {
         guard phase == .staged else { return }
         phase = .deleting
+        let work = targets.filter { $0.status == .inTrash || ($0.isCommand && $0.status == .waiting) }
+        for item in work { item.status = .running }
+        let before = Self.freeBytes()
         Task {
-            for item in targets where item.status == .inTrash || (item.isCommand && item.status == .waiting) {
-                current = item.id
-                item.status = .running
-                if dryRun {
-                    try? await Task.sleep(for: .milliseconds(item.isCommand ? 600 : 250))
-                    item.freed = item.bytes
-                    item.trashedBytes = 0
-                    item.status = .done
-                    continue
-                }
-                let before = Self.freeBytes()
-                var error: String?
-                if item.isCommand {
-                    error = await Self.runCommand(item.spec.command, path: env.path)
-                } else {
+            await withTaskGroup(of: Void.self) { group in
+                for item in work {
                     let urls = item.trashed
-                    await Task.detached(priority: .userInitiated) {
-                        for url in urls { try? FileManager.default.removeItem(at: url) }
-                    }.value
-                    item.trashed = []
-                    item.trashedBytes = 0
+                    let command = item.isCommand ? item.spec.command : nil
+                    let dryRun = dryRun
+                    group.addTask {
+                        var error: String?
+                        if dryRun {
+                            try? await Task.sleep(for: .milliseconds(command == nil ? 250 : 600))
+                        } else if let command {
+                            error = await Self.runCommand(command, path: env.path)
+                        } else {
+                            await Self.remove(urls)
+                        }
+                        await MainActor.run {
+                            item.trashed = []
+                            item.trashedBytes = 0
+                            if error == nil { item.freed = item.bytes }
+                            withAnimation(.snappy) { item.status = error.map { .failed($0) } ?? .done }
+                        }
+                    }
                 }
-                let after = Self.freeBytes()
-                item.freed = after > before ? after - before : 0
-                item.status = error.map { .failed($0) } ?? .done
             }
-            current = nil
+            // What the disk really got back: APFS frees a moment after the
+            // delete, and blocks shared with clones (bun installs packages as
+            // clones of its cache) stay in use, so wait for it to settle.
+            if !dryRun {
+                var last = Self.freeBytes()
+                for _ in 0..<10 {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    let now = Self.freeBytes()
+                    if now == last { break }
+                    last = now
+                }
+                reclaimed = last > before ? last - before : 0
+            }
             withAnimation(.snappy) { phase = .done }
             if !dryRun { onFinish() }
+        }
+    }
+
+    /// Moves paths to the Trash; returns where they went and the first error.
+    nonisolated static func trash(_ paths: [String]) async -> (moved: [URL], error: String?) {
+        await Task.detached(priority: .userInitiated) {
+            var moved: [URL] = []
+            var error: String?
+            for path in paths where FileManager.default.fileExists(atPath: path) {
+                do {
+                    var out: NSURL?
+                    try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &out)
+                    if let out { moved.append(out as URL) }
+                } catch let failure {
+                    error = error ?? failure.localizedDescription
+                }
+            }
+            return (moved, error)
+        }.value
+    }
+
+    /// Four deletes at a time across the whole run: measured on APFS, 4
+    /// threads remove a 100k-file node_modules 2x faster than `rm -rf`, and
+    /// more threads only contend (8 and 16 were slower).
+    nonisolated private static let deleteSlots = DispatchSemaphore(value: 4)
+    nonisolated private static let deleteQueue = DispatchQueue(label: "blitztree.delete", qos: .userInitiated,
+                                                               attributes: .concurrent)
+
+    /// Deletes folders for good, fast: each folder's children go through
+    /// removefile(3) on the shared slots, then the folder itself.
+    nonisolated static func remove(_ urls: [URL]) async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            deleteQueue.async {
+                let group = DispatchGroup()
+                for url in urls {
+                    for kid in (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? [] {
+                        deleteSlots.wait()
+                        group.enter()
+                        deleteQueue.async {
+                            _ = removefile(url.appendingPathComponent(kid).path, nil, removefile_flags_t(REMOVEFILE_RECURSIVE))
+                            deleteSlots.signal()
+                            group.leave()
+                        }
+                    }
+                }
+                group.wait()
+                for url in urls { _ = removefile(url.path, nil, removefile_flags_t(REMOVEFILE_RECURSIVE)) }
+                done.resume()
+            }
         }
     }
 
@@ -726,18 +853,32 @@ final class AgentRun {
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = path
             process.environment = environment
-            process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+            // Some tools only run inside a project (`bun pm cache rm` wants a
+            // package.json), so they run in an empty stand-in one.
+            let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("BlitzTree/tools", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let manifest = folder.appendingPathComponent("package.json")
+            if !FileManager.default.fileExists(atPath: manifest.path) {
+                try? #"{"name":"blitztree-cleanup","private":true}"#.write(to: manifest, atomically: true, encoding: .utf8)
+            }
+            process.currentDirectoryURL = folder
             process.standardInput = FileHandle.nullDevice
+            // Read as it comes: a chatty tool must never fill the pipe and stall.
             let err = Pipe()
+            let tail = ErrTail()
+            err.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty { handle.readabilityHandler = nil } else { tail.feed(data) }
+            }
             process.standardError = err
             process.standardOutput = FileHandle.nullDevice
             do { try process.run() } catch { return error.localizedDescription }
             let deadline = Date().addingTimeInterval(600)
-            while process.isRunning, Date() < deadline { usleep(100_000) }
+            while process.isRunning, Date() < deadline { usleep(50_000) }
             if process.isRunning { process.terminate(); return "Took too long" }
             guard process.terminationStatus != 0 else { return nil }
-            let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            return text.split(separator: "\n").last.map(String.init) ?? "Exited with \(process.terminationStatus)"
+            return tail.last.isEmpty ? "Exited with \(process.terminationStatus)" : tail.last
         }.value
     }
 }
@@ -996,6 +1137,8 @@ nonisolated enum AgentPrompt {
         `ollama rm <model>`, `go clean -modcache`, `gem cleanup`, `pod cache clean --all`, \
         `conda clean -a -y`. Nothing else, no pipes, `;`, `$` or globs; it must not prompt.
           - command: the exact command for "command", "" for "trash".
+        `npm cache clean` only empties ~/.npm/_cacache; ~/.npm/_npx is a separate "trash" item. Only \
+        list caches that appear in the tables above with their real size; skip ones that are not there.
         Name specific folders. Never a whole ~/Library, ~/Library/Caches, ~/Library/Application \
         Support, ~/Library/Containers, ~/Downloads or ~/.config: list the large subfolders instead.
         Never include: ~/Documents, ~/Desktop, ~/Pictures, the Photos library, ~/Movies, ~/Music, Mail, \

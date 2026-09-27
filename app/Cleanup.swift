@@ -306,7 +306,7 @@ private struct AgentRunView: View {
                                 .font(.system(size: 40, weight: .semibold, design: .rounded))
                                 .monospacedDigit()
                                 .contentTransition(.numericText())
-                            Text(run.phase == .done ? "back on your disk" : "ready to delete")
+                            Text(heroLine)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
@@ -377,7 +377,7 @@ private struct AgentRunView: View {
     private var busy: Bool { [.thinking, .trashing, .deleting].contains(run.phase) }
 
     /// The big number: what waits to be deleted, then what was freed.
-    private var hero: UInt64 { run.phase == .done ? run.freed : run.pendingBytes }
+    private var hero: UInt64 { run.phase == .done ? (run.reclaimed ?? run.freed) : run.pendingBytes }
 
     private var title: String {
         switch run.phase {
@@ -401,6 +401,16 @@ private struct AgentRunView: View {
         case .done: finishedLine
         case .failed: "Nothing was changed."
         }
+    }
+
+    private var heroLine: String {
+        guard run.phase == .done else { return "ready to delete" }
+        // Less can come back than the cards said: clones share blocks, and a
+        // tool's own cleanup may leave part of its folder.
+        if let back = run.reclaimed, run.freed > back + back / 10 {
+            return "back on your disk · the cards estimated \(Fmt.size(run.freed))"
+        }
+        return "back on your disk"
     }
 
     private var stagedLine: String {
@@ -564,6 +574,11 @@ private struct PlanCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let note = item.note, item.blocked == nil {
+                    Label(note, systemImage: "hammer")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let blocked = item.blocked {
                     Label(blocked, systemImage: "hand.raised.fill")
                         .font(.caption)
@@ -615,7 +630,8 @@ private struct PlanCard: View {
     private var where_: String {
         let home = NSHomeDirectory()
         let shown = item.paths.map { $0.hasPrefix(home) ? "~" + $0.dropFirst(home.count) : $0 }
-        return shown.count == 1 ? shown[0] : "\(shown[0]) +\(shown.count - 1)"
+        guard let first = shown.first else { return "" }
+        return shown.count == 1 ? first : "\(first) +\(shown.count - 1)"
     }
 
     @ViewBuilder private var status: some View {
