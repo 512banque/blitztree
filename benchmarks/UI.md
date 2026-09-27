@@ -111,3 +111,10 @@ interpreted as uninterrupted main-thread blocking or complete frame timings.
 
 A whole-module Swift optimization build did not demonstrate a useful layout
 gain, so the production build flags remain unchanged.
+
+The shared Clean Up implementation selects candidates in Rust before tree hand-off.
+Synthetic fixtures seed the Swift adapter with the existing reference output;
+use `run-ui.sh --scan-path PATH` to compare actual Rust selection with that
+reference. Cleanup presentation timings exclude Rust selection and must not
+be read as end-to-end selection speedups. Size ties are compared independently
+of order in the real-scan parity check.
