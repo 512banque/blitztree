@@ -34,7 +34,14 @@ private struct Fixture {
             nameOffsets.append(UInt32(blob.count))
         }
         let handle = bz_fixture_create(UInt32(names.count), parents, alloc, flags, offsets, edges, nameOffsets, blob)!
-        return Tree(handle: handle)!
+        // Synthetic tests measure the Swift presentation adapter. Rule parity
+        // against Rust is exercised by --scan-path and the Rust rule tests.
+        let reference = Tree(handle: handle)!
+        let populated = bz_fixture_create(UInt32(names.count), parents, alloc, flags, offsets, edges, nameOffsets, blob)!
+        for item in ReferenceCleanup.find(in: reference) {
+            bz_fixture_add_cleanup(populated, UInt32(item.node), item.kind)
+        }
+        return Tree(handle: populated)!
     }
 }
 
@@ -65,6 +72,7 @@ private func median(_ samples: [Double]) -> Double { samples.sorted()[samples.co
 struct UIPerformance {
     @MainActor
     static func main() {
+        print("Cleanup timings measure presentation of precomputed candidates; Rust selection is excluded.")
         var fixture = Fixture()
         let positive: [(String, String?)] = [
             ("node_modules", nil), (".venv", nil), ("venv", "pyvenv.cfg"),
@@ -77,26 +85,26 @@ struct UIPerformance {
         for (index, rule) in positive.enumerated() {
             let parentName = ["Xcode", "Library", "CoreSimulator"].contains(rule.1 ?? "") ? rule.1! : "project-\(index)"
             let parent = fixture.add(parentName)
-            let match = fixture.add(rule.0, to: parent, bytes: Cleanup.minBytes)
+            let match = fixture.add(rule.0, to: parent, bytes: ReferenceCleanup.minBytes)
             expected.insert(match)
             if let marker = rule.1, marker == "pyvenv.cfg" { fixture.add(marker, to: match, directory: false) }
             if let marker = rule.1, ["Cargo.toml", "package.json"].contains(marker) { fixture.add(marker, to: parent, directory: false) }
         }
         let bun = fixture.add(".bun")
         let install = fixture.add("install", to: bun)
-        expected.insert(fixture.add("cache", to: install, bytes: Cleanup.minBytes))
-        let nested = fixture.add("node_modules", bytes: Cleanup.minBytes)
+        expected.insert(fixture.add("cache", to: install, bytes: ReferenceCleanup.minBytes))
+        let nested = fixture.add("node_modules", bytes: ReferenceCleanup.minBytes)
         expected.insert(nested)
-        fixture.add(".venv", to: nested, bytes: Cleanup.minBytes)
+        fixture.add(".venv", to: nested, bytes: ReferenceCleanup.minBytes)
         let trash = fixture.add(".Trash")
-        fixture.add("node_modules", to: trash, bytes: Cleanup.minBytes)
+        fixture.add("node_modules", to: trash, bytes: ReferenceCleanup.minBytes)
         for name in ["node_modules", ".venv", ".cache", "Caches", "文件😀"] {
-            fixture.add(name, bytes: Cleanup.minBytes - 1)
+            fixture.add(name, bytes: ReferenceCleanup.minBytes - 1)
         }
         for name in ["venv", "target", ".next", "DerivedData", "Caches", "cache"] {
-            fixture.add(name, bytes: Cleanup.minBytes + 1)
+            fixture.add(name, bytes: ReferenceCleanup.minBytes + 1)
         }
-        fixture.add("node_modules", bytes: Cleanup.minBytes + 1, directory: false)
+        fixture.add("node_modules", bytes: ReferenceCleanup.minBytes + 1, directory: false)
         let edgeTree = fixture.tree()
         check(signature(Cleanup.find(in: edgeTree)) == signature(ReferenceCleanup.find(in: edgeTree)), "Cleanup differs on threshold / marker / nesting cases")
         check(Set(Cleanup.find(in: edgeTree).map(\.node)) == expected, "Cleanup violated explicit matching expectations")
@@ -119,8 +127,8 @@ struct UIPerformance {
         // tiny siblings so the threshold break never hides a later match.
         var wideCleanupFixture = Fixture()
         for child in 0..<100_000 { wideCleanupFixture.add("small-\(child)", bytes: 4096, directory: child.isMultiple(of: 2)) }
-        wideCleanupFixture.add(".venv", bytes: Cleanup.minBytes - 1)
-        let wideMatch = wideCleanupFixture.add("node_modules", bytes: Cleanup.minBytes)
+        wideCleanupFixture.add(".venv", bytes: ReferenceCleanup.minBytes - 1)
+        let wideMatch = wideCleanupFixture.add("node_modules", bytes: ReferenceCleanup.minBytes)
         wideCleanupFixture.add("large-file", bytes: 100_000_000, directory: false)
         let wideCleanupTree = wideCleanupFixture.tree()
         check(signature(Cleanup.find(in: wideCleanupTree)) == signature(ReferenceCleanup.find(in: wideCleanupTree)), "Cleanup differs on wide sorted tree")

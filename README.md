@@ -65,6 +65,26 @@ cargo test --release    # engine tests
 
 The Rust engine hands the finished tree to the Swift UI as flat arrays over a C interface, with no copying. `BlitzTree <path>` scans a specific folder.
 
+## JSON CLI for agents and scripts
+
+An optional, read-only CLI uses the same scan engine without opening the GUI
+or launching an AI agent:
+
+```sh
+cargo build --locked --release --features cli --bin blitztree
+./target/release/blitztree scan --root "$HOME/Downloads"
+./target/release/blitztree quick-wins --root "$HOME" --limit 20
+```
+
+`scan` lists the largest directories and files as JSON. `quick-wins` includes
+that inventory plus the Clean Up panel's existing candidates and labels. The
+panel and CLI share one Rust implementation of the rules, with no new heuristics.
+Both report incomplete scans; allocated bytes are not
+a promise of reclaimable space. Neither command modifies the scanned files.
+
+The CLI is built from source separately from the app. Its JSON dependency is
+only compiled with the `cli` feature. See [the CLI contract and tests](docs/AGENT_API.md).
+
 ## License
 
 MIT

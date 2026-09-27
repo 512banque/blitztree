@@ -21,6 +21,13 @@ const uint32_t *bz_name_off(BzScan *h); // length N+1
 const uint8_t *bz_name_blob(BzScan *h);
 uint64_t bz_errors(BzScan *h);
 
+// Shared Clean Up results, sorted by size. Buffers/labels live until bz_free.
+// Only read cleanup_nodes[0..cleanup_count]; an empty list has count zero.
+uint64_t bz_cleanup_count(BzScan *h);
+const uint32_t *bz_cleanup_nodes(BzScan *h);
+// index is a candidate-list index, not a tree node index. NULL out of range.
+const char *bz_cleanup_description(BzScan *h, uint64_t index);
+
 void bz_free(BzScan *h);
 
 #endif

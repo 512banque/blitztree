@@ -6,6 +6,7 @@ import Foundation
 struct UICleanupScan {
     @MainActor
     static func main() {
+        print("Candidate parity uses the actual Rust bridge. Cleanup timings exclude Rust selection during scan hand-off.")
         precondition(CommandLine.arguments.count > 1, "Usage: ui-cleanup-scan PATH [PATH ...]")
         for path in CommandLine.arguments.dropFirst() { measureScan(path) }
     }
@@ -20,7 +21,7 @@ struct UICleanupScan {
         } while done == 0
         guard let tree = Tree(handle: handle) else { bz_free(handle); fatalError("Scan produced no tree") }
         func signature(_ items: [CleanupItem]) -> [String] {
-            items.map { "\($0.node)|\($0.path)|\($0.display)|\($0.kind)|\($0.bytes)" }
+            items.map { "\($0.node)|\($0.path)|\($0.display)|\($0.kind)|\($0.bytes)" }.sorted()
         }
         let expected = signature(ReferenceCleanup.find(in: tree))
         precondition(signature(Cleanup.find(in: tree)) == expected, "Cleanup output changed")

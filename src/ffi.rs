@@ -2,12 +2,12 @@
 //! progress counters, then receives the finished tree as flat arrays
 //! (zero-copy: Swift reads the buffers in place until bz_free).
 
-use std::ffi::{c_char, c_int, CStr};
+use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::{scan, Progress};
+use crate::{cleanup, scan, Progress};
 
 pub struct BzScan {
     progress: Arc<Progress>,
@@ -28,6 +28,8 @@ struct Flat {
     children: Vec<u32>,
     name_off: Vec<u32>,
     name_blob: Vec<u8>,
+    cleanup_nodes: Vec<u32>,
+    cleanup_descriptions: Vec<CString>,
     errors: u64,
 }
 
@@ -42,6 +44,12 @@ fn build_flat(s: crate::Scan) -> Flat {
     let mut children: Vec<u32> = Vec::with_capacity(n.saturating_sub(1));
     let mut name_off = Vec::with_capacity(n + 1);
     let mut name_blob = Vec::with_capacity(s.nodes.iter().map(|node| node.name.len()).sum());
+    let candidates = cleanup::find(&s, cleanup::MIN_BYTES);
+    let cleanup_nodes = candidates.iter().map(|c| c.node).collect();
+    let cleanup_descriptions = candidates
+        .iter()
+        .map(|c| CString::new(c.kind.description()).expect("static cleanup label has no NUL"))
+        .collect();
 
     child_off.push(0u32);
     name_off.push(0u32);
@@ -74,6 +82,8 @@ fn build_flat(s: crate::Scan) -> Flat {
         children,
         name_off,
         name_blob,
+        cleanup_nodes,
+        cleanup_descriptions,
         errors: s.errors,
     }
 }
@@ -170,6 +180,38 @@ getter!(bz_children, children, u32);
 getter!(bz_name_off, name_off, u32);
 getter!(bz_name_blob, name_blob, u8);
 
+/// # Safety
+/// `h` must be a live scan handle, with no concurrent mutation or free.
+#[no_mangle]
+pub unsafe extern "C" fn bz_cleanup_count(h: *mut BzScan) -> u64 {
+    let h = unsafe { &*h };
+    h.flat.as_ref().map_or(0, |f| f.cleanup_nodes.len() as u64)
+}
+
+/// # Safety
+/// `h` must be a live scan handle, with no concurrent mutation or free.
+/// Read at most `bz_cleanup_count(h)` elements, before `bz_free(h)`.
+#[no_mangle]
+pub unsafe extern "C" fn bz_cleanup_nodes(h: *mut BzScan) -> *const u32 {
+    let h = unsafe { &*h };
+    h.flat
+        .as_ref()
+        .map_or(std::ptr::null(), |f| f.cleanup_nodes.as_ptr())
+}
+
+/// Label at a candidate-list index (not a tree node index), valid until bz_free.
+///
+/// # Safety
+/// `h` must be a live scan handle, with no concurrent mutation or free.
+#[no_mangle]
+pub unsafe extern "C" fn bz_cleanup_description(h: *mut BzScan, index: u64) -> *const c_char {
+    let h = unsafe { &*h };
+    h.flat
+        .as_ref()
+        .and_then(|f| f.cleanup_descriptions.get(index as usize))
+        .map_or(std::ptr::null(), |s| s.as_ptr())
+}
+
 #[no_mangle]
 pub extern "C" fn bz_errors(h: *mut BzScan) -> u64 {
     let h = unsafe { &*h };
@@ -195,6 +237,7 @@ mod tests {
             size: 0,
             alloc: 0,
             is_dir: true,
+            complete: true,
             n_files: 0,
             children: 1..dirs as u32 + 1,
         }];
@@ -206,6 +249,7 @@ mod tests {
                 size: 0,
                 alloc: 0,
                 is_dir: true,
+                complete: true,
                 n_files: 0,
                 children: start..start + files_per_dir as u32,
             });
@@ -219,6 +263,7 @@ mod tests {
                     size,
                     alloc: size.div_ceil(4096) * 4096,
                     is_dir: false,
+                    complete: true,
                     n_files: 0,
                     children: 0..0,
                 });
@@ -242,6 +287,8 @@ mod tests {
             children: Vec::with_capacity(n.saturating_sub(1)),
             name_off: Vec::with_capacity(n + 1),
             name_blob: Vec::new(),
+            cleanup_nodes: Vec::new(),
+            cleanup_descriptions: Vec::new(),
             errors: s.errors,
         };
         flat.child_off.push(0);
@@ -289,6 +336,45 @@ mod tests {
                 std::hint::black_box(&flat);
                 println!("flatten,{round},{variant},{}", elapsed.as_nanos());
             }
+        }
+    }
+
+    #[test]
+    fn bridge_exposes_the_shared_candidates_and_labels() {
+        for bytes in [0, cleanup::MIN_BYTES] {
+            let make_node = |name: &str, parent, children| Node {
+                name: name.into(),
+                parent,
+                children,
+                is_dir: true,
+                complete: true,
+                size: bytes,
+                alloc: bytes,
+                n_files: 0,
+            };
+            let scan = Scan {
+                nodes: vec![
+                    make_node("/root", NO_PARENT, 1..2),
+                    make_node("node_modules", 0, 0..0),
+                ],
+                errors: 0,
+            };
+            let expected = cleanup::find(&scan, cleanup::MIN_BYTES);
+            let mut handle = BzScan {
+                progress: Arc::new(Progress::default()),
+                done: Arc::new(AtomicBool::new(true)),
+                result: Arc::new(std::sync::Mutex::new(None)),
+                flat: Some(Box::new(build_flat(scan))),
+            };
+            let h = &mut handle as *mut BzScan;
+            assert_eq!(unsafe { bz_cleanup_count(h) } as usize, expected.len());
+            let nodes = unsafe { std::slice::from_raw_parts(bz_cleanup_nodes(h), expected.len()) };
+            for (i, candidate) in expected.iter().enumerate() {
+                assert_eq!(nodes[i], candidate.node);
+                let label = unsafe { CStr::from_ptr(bz_cleanup_description(h, i as u64)) };
+                assert_eq!(label.to_str().unwrap(), candidate.kind.description());
+            }
+            assert!(unsafe { bz_cleanup_description(h, expected.len() as u64) }.is_null());
         }
     }
 }
