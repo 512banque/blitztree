@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3 — 2026-09-27
+
+BlitzTree is now signed with a Developer ID and notarized by Apple: it opens with a normal double-click, with no Open Anyway step.
+
+- AI cleanup can plan Xcode simulator runtimes and device data (through `xcrun simctl`) and the Codex app's chat folders in `~/Documents/Codex`. Chats used in the last 2 days are kept.
+- Plan items and list selections light up on the treemap and rings even when their folder is drawn inside a combined "A ▸ B" box, and files light up too.
+- Clicking a plan card or Reclaimable row outside the zoomed folder zooms out to it.
+
+Updating from 0.5.2 or earlier: the new signature means macOS asks for Full Disk Access once more. Remove the old BlitzTree row in System Settings → Privacy & Security → Full Disk Access, add the new app, and relaunch.
+
 ## 0.5.2 — 2026-09-27
 
 This release halves scan memory, doubles treemap render speed, and adds a read-only JSON CLI.

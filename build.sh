@@ -57,6 +57,13 @@ xcrun actool "$PWD/assets/AppIcon.icon" --compile "$PWD/$APP/Contents/Resources"
 # Prefer a real identity: stable code requirement -> TCC/FDA grants survive
 # rebuilds. Developer ID (paid program) with the hardened runtime and a secure
 # timestamp is what notarization needs; Apple Development is the fallback.
+# The Developer ID key lives in its own keychain so codesign never prompts;
+# unlock it if this machine has one.
+SIGN_KC="$HOME/Library/Keychains/blitztree-signing.keychain-db"
+SIGN_PASS="$HOME/.config/blitztree-signing/keychain.pass"
+if [[ -f "$SIGN_KC" && -f "$SIGN_PASS" ]]; then
+    security unlock-keychain -p "$(<"$SIGN_PASS")" "$SIGN_KC"
+fi
 IDS=$(security find-identity -v -p codesigning 2>/dev/null)
 IDENTITY=$(awk -F'"' '/Developer ID Application/{print $2; exit}' <<<"$IDS")
 if [[ -n "$IDENTITY" ]]; then
