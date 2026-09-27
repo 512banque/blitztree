@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var model = ScanModel()
     @State private var showTable = true
     @AppStorage("bz.showCleanup") private var showCleanup = false
+    @AppStorage("bz.listWidth") private var listWidth = 390.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,10 +17,14 @@ struct ContentView: View {
                 // redo its first-time setup and froze the window as the new
                 // scan landed. A new tree only reloads into the same views.
                 if model.tree != nil || model.hasShownTree {
-                    HSplitView {
+                    // Not HSplitView: next to the Clean Up inspector it put AppKit
+                    // in an endless constraint-update loop and crashed the app
+                    // seconds after every scan with the panel open.
+                    HStack(spacing: 0) {
                         if showTable {
                             OutlinePanel(model: model)
-                                .frame(minWidth: 210, idealWidth: 285, maxWidth: 400)
+                                .frame(width: listWidth)
+                            ListDivider(width: $listWidth)
                         }
                         TreemapView(model: model)
                             .frame(minWidth: 400, maxWidth: .infinity)
@@ -289,6 +294,35 @@ struct ContentView: View {
 /// Left panel: a real NSOutlineView — the same control as Finder's list
 /// view. Native disclosure triangles, real file icons, alternating rows,
 /// keyboard navigation.
+/// The draggable line between the list and the treemap (210–400 pt).
+private struct ListDivider: View {
+    @Binding var width: Double
+    @State private var dragStart: Double?
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: 1)
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { drag in
+                                let start = dragStart ?? width
+                                dragStart = start
+                                width = min(400, max(210, start + drag.translation.width))
+                            }
+                            .onEnded { _ in dragStart = nil }
+                    )
+            }
+    }
+}
+
 /// List cells laid out by frame, not Auto Layout: AppKit re-lays out every
 /// row as it reloads, and solving constraints per row made reloads stall.
 final class NameCell: NSTableCellView {
