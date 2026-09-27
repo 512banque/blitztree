@@ -13,10 +13,11 @@ NOTES_FILE="${2:-}"
 # blitztree-notary --key <AuthKey.p8> --key-id <id> --issuer <uuid>`).
 # The app is stapled before packaging so it opens offline once copied out
 # of the dmg; the dmg is then signed, notarized and stapled itself.
+# (-dvv: plain -dv never prints the Authority lines.)
 NOTARIZE=0
-if codesign -dv build/BlitzTree.app 2>&1 | grep -q "Authority=Developer ID Application"; then
+DEVID=$(codesign -dvv build/BlitzTree.app 2>&1 | awk -F= '/^Authority=Developer ID Application/ && !n++ {print $2}')
+if [[ -n "$DEVID" ]]; then
     NOTARIZE=1
-    DEVID=$(codesign -dv build/BlitzTree.app 2>&1 | awk -F= '/^Authority=Developer ID Application/{print $2; exit}')
     echo "==> Notarizing app"
     ZIP=$(mktemp -d)/BlitzTree.zip
     ditto -c -k --keepParent build/BlitzTree.app "$ZIP"
@@ -45,8 +46,14 @@ fi
 [[ -n "$NOTES_FILE" ]] && NOTES=$(<"$NOTES_FILE")
 
 shasum -a 256 BlitzTree.dmg > SHA256SUMS.txt
-gh release create "v$V" BlitzTree.dmg SHA256SUMS.txt \
-    --title "BlitzTree $V" \
-    --notes "$NOTES"
+if gh release view "v$V" >/dev/null 2>&1; then
+    # Re-running over an existing (e.g. draft) release replaces its files.
+    gh release upload "v$V" BlitzTree.dmg SHA256SUMS.txt --clobber
+    gh release edit "v$V" --title "BlitzTree $V" --notes "$NOTES" --draft=false --latest
+else
+    gh release create "v$V" BlitzTree.dmg SHA256SUMS.txt \
+        --title "BlitzTree $V" \
+        --notes "$NOTES"
+fi
 rm -f SHA256SUMS.txt
 echo "==> released v$V"
