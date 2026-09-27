@@ -642,9 +642,13 @@ final class AgentRun {
 
     /// What step one moves to the Trash (tool caches wait for step two).
     var trashBytes: UInt64 { targets.filter { !$0.isCommand }.reduce(0) { $0 + $1.bytes } }
-    /// What step two deletes for good.
+    /// What step two deletes for good; while it runs, what is still going,
+    /// so the number counts down as each item finishes.
     var pendingBytes: UInt64 {
-        targets.filter { $0.status == .inTrash || ($0.isCommand && $0.status == .waiting) }.reduce(0) { $0 + $1.bytes }
+        targets.filter {
+            $0.status == .inTrash || ($0.isCommand && $0.status == .waiting)
+                || (phase == .deleting && $0.status == .running)
+        }.reduce(0) { $0 + $1.bytes }
     }
     /// The items the user chose and BlitzTree may touch.
     var targets: [PlanItem] { items.filter { $0.selected && $0.blocked == nil } }
@@ -847,11 +851,14 @@ final class AgentRun {
                 for item in work {
                     let urls = item.trashed
                     let command = item.isCommand ? item.spec.command : nil
+                    let bytes = item.bytes
                     let dryRun = dryRun
                     group.addTask {
                         var error: String?
                         if dryRun {
-                            try? await Task.sleep(for: .milliseconds(command == nil ? 250 : 600))
+                            // Roughly as long as the real delete: bigger items finish later.
+                            let gb = Double(bytes) / 1e9
+                            try? await Task.sleep(for: .seconds(min(3.5, 0.3 + gb / 4)))
                         } else if let command {
                             error = await Self.runCommand(command, path: env.path)
                         } else {
