@@ -130,6 +130,41 @@ enum CleanupSafetyChecks {
             }
         }
 
+        let chat = home.appendingPathComponent("Documents/Codex/2026-09-01/example")
+        let outputs = chat.appendingPathComponent("outputs")
+        try fm.createDirectory(at: outputs, withIntermediateDirectories: true)
+        for path in [chat.path, outputs.path] {
+            expectAllowed("Codex chat exception") {
+                _ = try CleanupPathSafety.capture(path: path, root: home.path, home: home.path)
+            }
+            precondition(CleanupPathSafety.codexChat(path, home: home.path) == chat.path)
+        }
+        for relative in ["Documents", "Documents/Codex", "Documents/Codex/2026-09-01",
+                         "Documents/Codex/not-a-date/example", "Documents/Other/2026-09-01/example"] {
+            let path = home.appendingPathComponent(relative).path
+            try fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+            expectRejected("Codex exception must not include its parents or neighboring folders") {
+                _ = try CleanupPathSafety.capture(path: path, root: home.path, home: home.path)
+            }
+            precondition(CleanupPathSafety.codexChat(path, home: home.path) == nil)
+        }
+        let chatAlias = "/System/Volumes/Data" + outputs.path
+        if fm.fileExists(atPath: chatAlias) {
+            expectAllowed("Codex chat via verified Data alias") {
+                _ = try CleanupPathSafety.capture(path: chatAlias, root: home.path, home: home.path)
+            }
+            precondition(CleanupPathSafety.codexChat(chatAlias, home: home.path) == chat.path)
+        }
+        try fm.createDirectory(at: chat.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        expectRejected("Codex exception must not override git protection") {
+            _ = try CleanupPathSafety.capture(path: chat.path, root: home.path, home: home.path)
+        }
+        let chatLink = chat.appendingPathComponent("linked-output")
+        try fm.createSymbolicLink(at: chatLink, withDestinationURL: outside)
+        expectRejected("Codex exception must not override symlink protection") {
+            _ = try CleanupPathSafety.capture(path: chatLink.path, root: home.path, home: home.path)
+        }
+
         let cloudArtifact = home.appendingPathComponent("cloud/project/node_modules", isDirectory: true)
         try fm.createDirectory(at: cloudArtifact, withIntermediateDirectories: true)
         let cloudFlag = UInt32(0x4000_0000)

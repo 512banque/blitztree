@@ -71,3 +71,5 @@ engine scan plus about 0.15 s to hand the tree to the UI.
 - Treemap render (1600×1600 px, /Applications): 100–190 ms on one thread
   originally, now ~5 ms layout + ~3 ms paint across 30 row bands, pixel-for-pixel
   the same image.
+- The peak memory rows above predate the flat engine, which peaks at about
+  half of v0.5.1 (see the audit's third pass).

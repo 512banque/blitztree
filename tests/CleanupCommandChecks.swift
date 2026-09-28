@@ -3,6 +3,7 @@ import Foundation
 @main
 struct CleanupCommandChecks {
     static func main() {
+        let simulatorID = "12345678-1234-1234-1234-123456789ABC"
         let allowed = [
             "uv cache clean",
             "bun pm cache rm",
@@ -13,6 +14,8 @@ struct CleanupCommandChecks {
             "docker system prune -f",
             "docker builder prune -f",
             "xcrun simctl delete unavailable",
+            "xcrun simctl runtime delete \(simulatorID)",
+            "xcrun simctl erase \(simulatorID)",
             "pip cache purge",
             "ollama rm llama3.2:latest",
             "go clean -modcache",
@@ -37,6 +40,14 @@ struct CleanupCommandChecks {
             "brew cleanup --prune=all --dry-run",
             "npm cache clean --force /tmp/other-cache",
             "xcrun simctl delete unavailable ABCD",
+            "xcrun simctl runtime delete all",
+            "xcrun simctl runtime delete \(simulatorID) --dry-run",
+            "xcrun simctl runtime delete \(simulatorID) \(simulatorID)",
+            "xcrun simctl erase all",
+            "xcrun simctl erase booted",
+            "xcrun simctl erase invalid-id",
+            "xcrun simctl erase \(simulatorID)\t\(simulatorID)",
+            "xcrun simctl erase \(simulatorID); true",
             "go clean -modcache /tmp/other-cache",
             "ollama rm --all",
             "ollama rm model-one model-two",
@@ -57,6 +68,10 @@ struct CleanupCommandChecks {
         precondition(CleanupCommand.parse("pip3 cache purge")?.cacheRelativePath == "Library/Caches/pip")
         precondition(CleanupCommand.parse("docker system prune -f")?.cacheRelativePath == nil)
         precondition(CleanupCommand.promptExamples.contains("`ollama rm <model>`"))
+        precondition(CleanupCommand.promptExamples.contains("`xcrun simctl runtime delete <id>`"))
+        precondition(CleanupCommand.promptExamples.contains("`xcrun simctl erase <udid>`"))
+        precondition(CleanupCommand.parse("xcrun simctl erase \(simulatorID)")?.argv
+                     == ["xcrun", "simctl", "erase", simulatorID])
         print("PASS: CleanupCommand exact argv allowlist")
     }
 }

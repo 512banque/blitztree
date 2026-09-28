@@ -9,6 +9,13 @@ engine, and checks:
 - scan membership, known cache paths, measured sizes and final-plan changes;
 - identity checks before moving or deleting an item;
 - partial deletion failures, retained receipts and symlink children.
+- upstream compatibility: Codex chat paths, exact single-simulator commands,
+  and countdowns that retain running commands and failed Trash receipts.
+
+Simulator commands use one UUID, never `all`, `booted`, or extra arguments.
+Like other tool commands, their listed paths must occur in the scan, their sizes
+come from that scan, and they require explicit selection. Runtimes outside the
+scan remain blocked; this change does not add a separate simulator inventory.
 
 All filesystem mutations remain inside temporary fixtures. Moves use a fixture
 directory in place of the user's Trash; no cleanup tool, agent or GUI is launched.

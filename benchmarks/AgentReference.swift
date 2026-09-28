@@ -277,7 +277,8 @@ nonisolated enum ReferenceAgentPrompt {
         Never include: ~/Documents, ~/Desktop, ~/Pictures, the Photos library, ~/Movies, ~/Music, Mail, \
         Messages, iCloud Drive (~/Library/Mobile Documents), keychains, ~/.ssh, dotfile configs, source \
         code, git repositories themselves, or files of the running apps below. Build output inside \
-        projects (node_modules, target, .next, dist, DerivedData) is fine.
+        projects (node_modules, target, .next, dist, DerivedData) is fine, and so are the Codex chat \
+        folders and Xcode simulators listed at the end.
 
         ## Apps running now
         \(running.joined(separator: ", "))

@@ -15,6 +15,7 @@ changes={
     'private var preparationTask: Task<Void, Never>?': 'var preparationTask: Task<Void, Never>?',
     'start(input: input, env: env)': 'AgentBenchmarkLaunch.record(input)',
     'AgentPrompt.build(tree: tree, scanRoot: scanRoot, known: known, running: running)': 'AgentBenchmarkGate.shared.waitIfArmed(); return AgentPrompt.build(tree: tree, scanRoot: scanRoot, known: known, running: running)',
+    '+ AgentPrompt.appData(tree: tree)': '',  # Keep simulator/session lookups out of the offline fixture.
 }
 for old,new in changes.items():
     assert source.count(old)==1, f'Expected one benchmark hook: {old}'
@@ -28,13 +29,12 @@ old='''                        guard let target = item.target else {
 assert source.count(old)==1, 'Expected one manual-trash operation'
 p.write_text(source.replace(old, '                        try AgentBenchmarkTrash.move(item)'))
 p=Path(sys.argv[3]); source=p.read_text()
-old='''        if let agent = preferredAgent {
-            startAgent(agent)
-        } else {'''
-new='''        if preferredAgent != nil {
-            if !cleanupTrash.running { AgentBenchmarkLaunch.autoStarts += 1 }
-        } else {'''
-assert source.count(old)==1, 'Expected one automatic agent launch'
+old='''    func startAgent(_ agent: InstalledAgent) {
+'''
+new='''    func startAgent(_ agent: InstalledAgent) {
+        AgentBenchmarkLaunch.agentStarts += 1
+'''
+assert source.count(old)==1, 'Expected one agent start'
 p.write_text(source.replace(old, new))
 PY
 clang -O2 -mmacosx-version-min=14.0 -c benchmarks/ui_fixture.c -o "$AGENT_BENCH_TMP/fixture.o"

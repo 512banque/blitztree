@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::{cleanup, scan, Progress};
+use crate::{cleanup, scan, Progress, Tree};
 
 pub struct BzScan {
     progress: Arc<Progress>,
@@ -17,74 +17,22 @@ pub struct BzScan {
     flat: Option<Box<Flat>>,
 }
 
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+/// The scanned tree (already in the flat layout) plus Clean Up's candidates.
 struct Flat {
-    parents: Vec<u32>,
-    alloc: Vec<u64>,
-    logical: Vec<u64>,
-    n_files: Vec<u32>,
-    flags: Vec<u8>, // bit0 = is_dir
-    child_off: Vec<u32>,
-    children: Vec<u32>,
-    name_off: Vec<u32>,
-    name_blob: Vec<u8>,
+    tree: Tree,
     cleanup_nodes: Vec<u32>,
     cleanup_descriptions: Vec<CString>,
-    errors: u64,
 }
 
-fn build_flat(s: crate::Scan) -> Flat {
-    let n = s.nodes.len();
-    let mut parents = Vec::with_capacity(n);
-    let mut alloc = Vec::with_capacity(n);
-    let mut logical = Vec::with_capacity(n);
-    let mut n_files = Vec::with_capacity(n);
-    let mut flags = Vec::with_capacity(n);
-    let mut child_off = Vec::with_capacity(n + 1);
-    let mut children: Vec<u32> = Vec::with_capacity(n.saturating_sub(1));
-    let mut name_off = Vec::with_capacity(n + 1);
-    let mut name_blob = Vec::with_capacity(s.nodes.iter().map(|node| node.name.len()).sum());
-    let candidates = cleanup::find(&s, cleanup::MIN_BYTES);
-    let cleanup_nodes = candidates.iter().map(|c| c.node).collect();
-    let cleanup_descriptions = candidates
-        .iter()
-        .map(|c| CString::new(c.kind.description()).expect("static cleanup label has no NUL"))
-        .collect();
-
-    child_off.push(0u32);
-    name_off.push(0u32);
-    for node in s.nodes {
-        parents.push(node.parent);
-        alloc.push(node.alloc);
-        logical.push(node.size);
-        n_files.push(node.n_files);
-        flags.push(node.is_dir as u8);
-
-        children.extend(node.children);
-        child_off.push(children.len() as u32);
-
-        name_blob.extend_from_slice(node.name.as_bytes());
-        name_off.push(name_blob.len() as u32);
-    }
-    // Sort in the final buffer, using the compact allocation column rather
-    // than copying every child list and randomly reading the large node arena.
-    for offsets in child_off.windows(2) {
-        children[offsets[0] as usize..offsets[1] as usize]
-            .sort_unstable_by_key(|&c| std::cmp::Reverse(alloc[c as usize]));
-    }
+fn with_cleanup(tree: Tree) -> Flat {
+    let candidates = cleanup::find(&tree, cleanup::MIN_BYTES);
     Flat {
-        parents,
-        alloc,
-        logical,
-        n_files,
-        flags,
-        child_off,
-        children,
-        name_off,
-        name_blob,
-        cleanup_nodes,
-        cleanup_descriptions,
-        errors: s.errors,
+        cleanup_nodes: candidates.iter().map(|c| c.node).collect(),
+        cleanup_descriptions: candidates
+            .iter()
+            .map(|c| CString::new(c.kind.description()).expect("static cleanup label has no NUL"))
+            .collect(),
+        tree,
     }
 }
 
@@ -105,15 +53,14 @@ pub extern "C" fn bz_scan_start(path: *const c_char) -> *mut BzScan {
         std::thread::spawn(move || {
             unsafe { crate::set_thread_qos_user_interactive() };
             let t0 = std::time::Instant::now();
-            let s = scan(&path, &progress);
+            let tree = scan(&path, &progress);
             let t1 = std::time::Instant::now();
-            let flat = build_flat(s);
-            let t2 = std::time::Instant::now();
+            let flat = with_cleanup(tree);
             if std::env::var_os("BZ_TIMING").is_some() {
                 eprintln!(
-                    "[bz] scan {:.2}s  flatten {:.2}s",
+                    "[bz] scan {:.3}s  cleanup {:.1}ms",
                     (t1 - t0).as_secs_f64(),
-                    (t2 - t1).as_secs_f64()
+                    t1.elapsed().as_secs_f64() * 1e3
                 );
             }
             *result.lock().unwrap() = Some(flat);
@@ -155,7 +102,7 @@ pub extern "C" fn bz_take_tree(h: *mut BzScan) -> u64 {
             h.flat = Some(Box::new(f));
         }
     }
-    h.flat.as_ref().map_or(0, |f| f.parents.len() as u64)
+    h.flat.as_ref().map_or(0, |f| f.tree.len() as u64)
 }
 
 macro_rules! getter {
@@ -165,7 +112,7 @@ macro_rules! getter {
             let h = unsafe { &*h };
             h.flat
                 .as_ref()
-                .map_or(std::ptr::null(), |f| f.$field.as_ptr())
+                .map_or(std::ptr::null(), |f| f.tree.$field.as_ptr())
         }
     };
 }
@@ -215,7 +162,7 @@ pub unsafe extern "C" fn bz_cleanup_description(h: *mut BzScan, index: u64) -> *
 #[no_mangle]
 pub extern "C" fn bz_errors(h: *mut BzScan) -> u64 {
     let h = unsafe { &*h };
-    h.flat.as_ref().map_or(0, |f| f.errors)
+    h.flat.as_ref().map_or(0, |f| f.tree.errors)
 }
 
 #[no_mangle]
@@ -225,146 +172,27 @@ pub extern "C" fn bz_free(h: *mut BzScan) {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Node, Scan, NO_PARENT};
-
-    fn fixture(dirs: usize, files_per_dir: usize) -> Scan {
-        let mut nodes = vec![Node {
-            name: "/fixture".into(),
-            parent: NO_PARENT,
-            size: 0,
-            alloc: 0,
-            is_dir: true,
-            complete: true,
-            n_files: 0,
-            children: 1..dirs as u32 + 1,
-        }];
-        for dir in 0..dirs {
-            let start = (dirs + 1 + dir * files_per_dir) as u32;
-            nodes.push(Node {
-                name: format!("directory-{dir}").into_boxed_str(),
-                parent: 0,
-                size: 0,
-                alloc: 0,
-                is_dir: true,
-                complete: true,
-                n_files: 0,
-                children: start..start + files_per_dir as u32,
-            });
-        }
-        for dir in 0..dirs {
-            for file in 0..files_per_dir {
-                let size = (file as u64 * 7919 + dir as u64 * 104729) % 1_000_000;
-                nodes.push(Node {
-                    name: format!("document-{dir}-{file}-é-日本語.txt").into_boxed_str(),
-                    parent: dir as u32 + 1,
-                    size,
-                    alloc: size.div_ceil(4096) * 4096,
-                    is_dir: false,
-                    complete: true,
-                    n_files: 0,
-                    children: 0..0,
-                });
-            }
-        }
-        crate::aggregate(&mut nodes);
-        Scan { nodes, errors: 3 }
-    }
-
-    // Keep the original conversion as an independent reference for both exact
-    // ABI regression coverage and an isolated, repeatable flatten benchmark.
-    fn reference_flat(s: Scan) -> Flat {
-        let n = s.nodes.len();
-        let mut flat = Flat {
-            parents: Vec::with_capacity(n),
-            alloc: Vec::with_capacity(n),
-            logical: Vec::with_capacity(n),
-            n_files: Vec::with_capacity(n),
-            flags: Vec::with_capacity(n),
-            child_off: Vec::with_capacity(n + 1),
-            children: Vec::with_capacity(n.saturating_sub(1)),
-            name_off: Vec::with_capacity(n + 1),
-            name_blob: Vec::new(),
-            cleanup_nodes: Vec::new(),
-            cleanup_descriptions: Vec::new(),
-            errors: s.errors,
-        };
-        flat.child_off.push(0);
-        flat.name_off.push(0);
-        for node in &s.nodes {
-            flat.parents.push(node.parent);
-            flat.alloc.push(node.alloc);
-            flat.logical.push(node.size);
-            flat.n_files.push(node.n_files);
-            flat.flags.push(node.is_dir as u8);
-            let mut kids: Vec<_> = node.children.clone().collect();
-            kids.sort_unstable_by_key(|&c| std::cmp::Reverse(s.nodes[c as usize].alloc));
-            flat.children.extend_from_slice(&kids);
-            flat.child_off.push(flat.children.len() as u32);
-            flat.name_blob.extend_from_slice(node.name.as_bytes());
-            flat.name_off.push(flat.name_blob.len() as u32);
-        }
-        flat
-    }
-
-    #[test]
-    fn flatten_preserves_every_abi_column_and_child_order() {
-        for (dirs, files) in [(0, 0), (3, 0), (1, 1024), (128, 4)] {
-            assert_eq!(
-                build_flat(fixture(dirs, files)),
-                reference_flat(fixture(dirs, files))
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "isolated performance measurement; run in release with --nocapture"]
-    fn flatten_benchmark() {
-        // Alternate execution order to avoid favoring either implementation.
-        for round in 0..10 {
-            for variant in [round % 2, 1 - round % 2] {
-                let scan = fixture(256, 1024);
-                let start = std::time::Instant::now();
-                let flat = if variant == 0 {
-                    reference_flat(scan)
-                } else {
-                    build_flat(scan)
-                };
-                let elapsed = start.elapsed();
-                std::hint::black_box(&flat);
-                println!("flatten,{round},{variant},{}", elapsed.as_nanos());
-            }
-        }
-    }
+    use crate::NO_PARENT;
 
     #[test]
     fn bridge_exposes_the_shared_candidates_and_labels() {
         for bytes in [0, cleanup::MIN_BYTES] {
-            let make_node = |name: &str, parent, children| Node {
-                name: name.into(),
-                parent,
-                children,
-                is_dir: true,
-                complete: true,
-                size: bytes,
-                alloc: bytes,
-                n_files: 0,
-            };
-            let scan = Scan {
-                nodes: vec![
-                    make_node("/root", NO_PARENT, 1..2),
-                    make_node("node_modules", 0, 0..0),
-                ],
-                errors: 0,
-            };
-            let expected = cleanup::find(&scan, cleanup::MIN_BYTES);
+            let mut tree = Tree::with_root("/root");
+            tree.push("node_modules", 0, bytes, bytes, true);
+            (tree.alloc[0], tree.logical[0]) = (bytes, bytes);
+            tree.link_children();
+            assert_eq!(tree.parents, [NO_PARENT, 0]);
+            let expected = cleanup::find(&tree, cleanup::MIN_BYTES);
+            assert_eq!(expected.len(), (bytes > 0) as usize);
             let mut handle = BzScan {
                 progress: Arc::new(Progress::default()),
                 done: Arc::new(AtomicBool::new(true)),
                 result: Arc::new(std::sync::Mutex::new(None)),
-                flat: Some(Box::new(build_flat(scan))),
+                flat: Some(Box::new(with_cleanup(tree))),
             };
             let h = &mut handle as *mut BzScan;
             assert_eq!(unsafe { bz_cleanup_count(h) } as usize, expected.len());

@@ -36,7 +36,7 @@ nonisolated struct CleanupCommand: Sendable, Equatable {
     /// commands accepted by older app builds without accepting new flags.
     static var promptExamples: String {
         fixedEntries.map { "`\($0.words.joined(separator: " "))`" }
-            .joined(separator: ", ") + ", `ollama rm <model>`"
+            .joined(separator: ", ") + ", `ollama rm <model>`, `xcrun simctl runtime delete <id>`, `xcrun simctl erase <udid>`"
     }
 
     /// Parses only a single known argv shape. Spaces and tabs separate argv
@@ -57,6 +57,14 @@ nonisolated struct CleanupCommand: Sendable, Equatable {
 
         if let fixed = fixedEntries.first(where: { $0.words == words }) {
             return Self(executable: fixed.words[0], arguments: Array(fixed.words.dropFirst()))
+        }
+
+        // Target one simulator by its UUID, never aliases such as "all" or
+        // "booted", multiple IDs, or optional flags.
+        if (words.count == 4 && Array(words.prefix(3)) == ["xcrun", "simctl", "erase"])
+            || (words.count == 5 && Array(words.prefix(4)) == ["xcrun", "simctl", "runtime", "delete"]) {
+            guard let id = words.last, id.utf8.count == 36, UUID(uuidString: id) != nil else { return nil }
+            return Self(executable: "xcrun", arguments: Array(words.dropFirst()))
         }
 
         guard words.count == 3, words[0] == "ollama", words[1] == "rm",

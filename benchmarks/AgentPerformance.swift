@@ -6,7 +6,7 @@ import Foundation
 @MainActor
 enum AgentBenchmarkLaunch {
     static var calls = 0
-    static var autoStarts = 0
+    static var agentStarts = 0
     static func record(_ input: String) {
         precondition(!input.isEmpty)
         calls += 1
@@ -353,8 +353,8 @@ struct AgentPerformance {
         }!
         selected.removeAll() // The batch must retain the originally captured items.
         check(batch.running, "Busy state was not set synchronously")
-        model.autoStartIfReady()
-        check(AgentBenchmarkLaunch.autoStarts == 0, "Automatic planning started while trash was busy")
+        model.openPanelAfterLaunchScan()
+        check(model.panelRequests == 0, "Launch panel opened while trash was busy")
         check(batch.start(selected) { _ in completions += 1 } == nil, "Busy batch accepted duplicate work")
         for _ in 0..<1000 {
             if AgentBenchmarkGate.shared.hasEntered { break }
@@ -380,9 +380,10 @@ struct AgentPerformance {
         check(batch.failures == retainedFailures, "A later batch erased unacknowledged failures")
         batch.clearFailures()
         check(batch.failures.isEmpty, "Acknowledged cleanup failures were not cleared")
-        model.autoStartIfReady()
-        model.autoStartIfReady()
-        check(AgentBenchmarkLaunch.autoStarts == 1, "Busy cleanup consumed or duplicated one-shot automatic planning")
+        model.openPanelAfterLaunchScan()
+        model.openPanelAfterLaunchScan()
+        check(model.panelRequests == 1, "Busy cleanup consumed or duplicated the one-shot launch panel")
+        check(AgentBenchmarkLaunch.agentStarts == 0 && model.agentRun == nil, "An agent started without a click")
         print("PASS: incremental parser split parity; JSONL event/write parity (both agents); prompt byte equality; cancellation prevents launch; trash batch stays off-main, rejects duplicate starts, retains failures until dismissed, completes once")
         guard !CommandLine.arguments.contains("--check-only") else { return }
 

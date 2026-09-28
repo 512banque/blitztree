@@ -233,9 +233,13 @@ final class TreemapNSView: NSView {
         return found
     }
 
+    /// A folder's rect, or for the selection any node's (see `Tree.drawn`).
     private func dirRect(_ node: Int) -> CGRect? {
         if let r = dirMemo[node] { return r }
-        let r = Scan.dir(rects, node)
+        let r = Scan.dir(rects, node) ?? model?.tree.flatMap { tree in
+            tree.isDir(node) ? tree.drawn(node) { Scan.dir(rects, $0) != nil }.flatMap { Scan.dir(rects, $0) }
+                : Scan.leaf(leaves, node)?.rect
+        }
         if dirMemo.count > 64 { dirMemo = [:] }
         dirMemo[node] = r
         return r
@@ -336,7 +340,7 @@ final class TreemapNSView: NSView {
             }
         }
         if !highlights.isEmpty {
-            if litRects == nil { litRects = Scan.lit(rects, highlights) }
+            if litRects == nil, let tree = model.tree { litRects = Scan.lit(rects, leaves, highlights, tree: tree) }
             let lit = litRects ?? []
             if !lit.isEmpty {
                 let dim = NSBezierPath(rect: bounds)
@@ -474,9 +478,26 @@ nonisolated private enum Scan {
         rects.first { $0.node == node && $0.isDir }?.rect
     }
 
-    static func lit(_ rects: [TMRect], _ nodes: [Int]) -> [CGRect] {
+    /// Each node's rect: files from `leaves`, folders from `rects`, and a
+    /// folder merged into its parent's "A ▸ B" box lights that box.
+    static func lit(_ rects: [TMRect], _ leaves: [TMRect], _ nodes: [Int], tree: Tree) -> [CGRect] {
         let wanted = Set(nodes)
-        return rects.filter { wanted.contains($0.node) }.map { $0.rect.insetBy(dx: 0.5, dy: 0.5) }
+        var dirs: [Int: CGRect] = [:]
+        for r in rects { dirs[r.node] = r.rect }
+        var out = Set<Int>()
+        var files: [CGRect] = []
+        for node in wanted where tree.isDir(node) {
+            if let shown = tree.drawn(node, isDrawn: { dirs[$0] != nil }) { out.insert(shown) }
+        }
+        if wanted.contains(where: { !tree.isDir($0) }) {
+            files = leaves.filter { wanted.contains($0.node) }.map(\.rect)
+        }
+        // A box inside another lit one would be dimmed again by the even-odd fill.
+        let all = out.compactMap { dirs[$0] } + files
+        let outer = all.enumerated().filter { i, r in
+            !all.enumerated().contains { j, o in j != i && o.contains(r) && (o != r || j < i) }
+        }
+        return outer.map { $0.element.insetBy(dx: 0.5, dy: 0.5) }
     }
 
     static func label(_ labels: [TMLabel], _ node: Int) -> Int? {

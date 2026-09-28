@@ -1,5 +1,5 @@
 //! Read-only reports for agents. Suggestions are review candidates, not delete permissions.
-use blitztree::{cleanup, Scan};
+use blitztree::{cleanup, Tree};
 use serde_json::{json, Value};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -10,24 +10,24 @@ pub struct Options {
     pub limit: usize,
 }
 
-fn entry(scan: &Scan, i: usize) -> Value {
-    let n = &scan.nodes[i];
+fn entry(t: &Tree, i: usize) -> Value {
+    let is_dir = t.is_dir(i);
     json!({
-        "path": scan.path(i), "kind": if n.is_dir { "directory" } else { "file_or_link" },
-        "allocated_bytes": n.alloc, "logical_bytes": n.size,
-        "file_count": if n.is_dir { n.n_files } else { 1 },
-        "complete": n.complete,
+        "path": t.path(i), "kind": if is_dir { "directory" } else { "file_or_link" },
+        "allocated_bytes": t.alloc[i], "logical_bytes": t.logical[i],
+        "file_count": if is_dir { t.n_files[i] } else { 1 },
+        "complete": t.complete[i],
     })
 }
 
-fn ordered(scan: &Scan, indices: impl Iterator<Item = usize>, limit: usize) -> Vec<usize> {
+fn ordered(scan: &Tree, indices: impl Iterator<Item = usize>, limit: usize) -> Vec<usize> {
     if limit == 0 {
         return Vec::new();
     }
     // Keep only the requested top K, even for millions of equally sized files.
     let mut heap: BinaryHeap<Reverse<(u64, Reverse<PathBuf>, usize)>> = BinaryHeap::new();
     for i in indices {
-        let alloc = scan.nodes[i].alloc;
+        let alloc = scan.alloc[i];
         if heap.len() == limit
             && heap
                 .peek()
@@ -48,22 +48,22 @@ fn ordered(scan: &Scan, indices: impl Iterator<Item = usize>, limit: usize) -> V
     best.into_iter().map(|item| item.2).collect()
 }
 
-pub fn inventory(scan: &Scan, options: &Options) -> Value {
+pub fn inventory(scan: &Tree, options: &Options) -> Value {
     let children = ordered(
         scan,
-        scan.nodes[0].children.clone().map(|i| i as usize),
+        scan.kids(0).iter().map(|&i| i as usize),
         options.limit,
     );
     let files = ordered(
         scan,
-        (1..scan.nodes.len())
-            .filter(|&i| !scan.nodes[i].is_dir && scan.nodes[i].alloc >= options.min_bytes),
+        (1..scan.len())
+            .filter(|&i| !scan.is_dir(i) && scan.alloc[i] >= options.min_bytes),
         options.limit,
     );
     let directories = ordered(
         scan,
-        (1..scan.nodes.len())
-            .filter(|&i| scan.nodes[i].is_dir && scan.nodes[i].alloc >= options.min_bytes),
+        (1..scan.len())
+            .filter(|&i| scan.is_dir(i) && scan.alloc[i] >= options.min_bytes),
         options.limit,
     );
     json!({
@@ -74,16 +74,16 @@ pub fn inventory(scan: &Scan, options: &Options) -> Value {
     })
 }
 
-pub fn quick_wins(scan: &Scan, options: &Options) -> Value {
+pub fn quick_wins(scan: &Tree, options: &Options) -> Value {
     let candidates = cleanup::find(scan, options.min_bytes);
     let candidate_allocated_bytes: u64 = candidates
         .iter()
-        .map(|c| scan.nodes[c.node as usize].alloc)
+        .map(|c| scan.alloc[c.node as usize])
         .sum();
     let displayed_allocated_bytes: u64 = candidates
         .iter()
         .take(options.limit)
-        .map(|c| scan.nodes[c.node as usize].alloc)
+        .map(|c| scan.alloc[c.node as usize])
         .sum();
     let displayed: Vec<Value> = candidates
         .iter()

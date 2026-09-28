@@ -134,6 +134,21 @@ nonisolated enum CleanupPathSafety {
         return normalized
     }
 
+    /// The same narrow Documents exception used by the planner and path
+    /// policy. Home aliases are accepted only when their identity matches.
+    static func codexChat(_ path: String, home: String = NSHomeDirectory()) -> String? {
+        guard let p = try? normalize(path), let h = try? normalize(home),
+              let homeIdentity = try? identity(of: h),
+              let homePath = homeAlias(p, home: h, homeIdentity: homeIdentity),
+              let relative = relativePath(homePath, under: h) else { return nil }
+        let parts = relative.split(separator: "/")
+        guard parts.count >= 4,
+              parts[0].caseInsensitiveCompare("Documents") == .orderedSame,
+              parts[1].caseInsensitiveCompare("Codex") == .orderedSame,
+              parts[2].wholeMatch(of: /\d{4}-\d{2}-\d{2}/) != nil else { return nil }
+        return h + "/" + parts.prefix(4).joined(separator: "/")
+    }
+
     fileprivate static func identity(of path: String) throws -> CleanupIdentity {
         let info = try readStat(path)
         return CleanupIdentity(
@@ -299,6 +314,7 @@ nonisolated enum CleanupPathSafety {
             guard protectedMatch else { continue }
             let suffix = relative.caseInsensitiveCompare(protected) == .orderedSame
                 ? [] : relative.dropFirst(protected.count + 1).split(separator: "/")
+            if protected == "Documents", codexChat(homePath, home: home) != nil { continue }
             if protected.caseInsensitiveCompare("Documents") == .orderedSame
                 || protected.caseInsensitiveCompare("Desktop") == .orderedSame {
                 guard suffix.count >= 2,

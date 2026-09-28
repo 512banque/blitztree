@@ -57,6 +57,28 @@ struct CleanupIntegrationChecks {
         precondition(plan(spec([], action: "command", command: "docker system prune -f")).blocked != nil)
         let original = plan(spec([cache], action: "command", command: "docker system prune -f"))
         precondition(original.blocked == nil && !original.selected && original.note != nil)
+        for state in [PlanItem.Status.waiting, .running] {
+            original.status = state
+            precondition(original.pendingBytes == original.bytes, "running commands stay in the countdown")
+        }
+        original.status = .done
+        precondition(original.pendingBytes == 0, "completed commands leave the countdown")
+        original.status = .waiting
+        valid.trashedBytes = valid.bytes / 2
+        valid.status = .running
+        precondition(valid.pendingBytes == valid.trashedBytes, "count only folders actually moved")
+        valid.status = .failed("partial removal")
+        precondition(valid.pendingBytes == valid.trashedBytes, "failed receipts remain visible")
+        valid.trashedBytes = 0
+        valid.status = .done
+        precondition(valid.pendingBytes == 0)
+        let simulatorID = "12345678-1234-1234-1234-123456789ABC"
+        for command in ["xcrun simctl erase \(simulatorID)", "xcrun simctl runtime delete \(simulatorID)"] {
+            let simulator = plan(spec([other], action: "command", command: command))
+            precondition(simulator.blocked == nil && !simulator.selected && simulator.isCommand)
+            precondition(simulator.cleanupTargets.isEmpty && simulator.bytes == tree.alloc[tree.node(at: other)!])
+            precondition(plan(spec([unscanned], action: "command", command: command)).blocked != nil)
+        }
         let changed = spec([], action: "command", command: "docker system prune -f --volumes")
         let final = PlanItem.reconcile([original.spec, changed], previous: [original], tree: tree)
         precondition(final[0] === original, "unchanged actions retain their captured identities")

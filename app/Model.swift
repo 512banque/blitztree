@@ -109,6 +109,19 @@ nonisolated final class Tree: @unchecked Sendable {
         }
         return chain.reversed()
     }
+
+    /// What a map draws for `node`: itself, or when it has no shape of its
+    /// own (merged into an "A ▸ B" box, too deep for the rings) the nearest
+    /// drawn folder that is mostly it. Nil when only a much larger folder is.
+    func drawn(_ node: Int, isDrawn: (Int) -> Bool) -> Int? {
+        var cur = node
+        while !isDrawn(cur) {
+            let parent = parents[cur]
+            guard parent != UInt32.max, alloc[Int(parent)] <= 2 * alloc[node] else { return nil }
+            cur = Int(parent)
+        }
+        return cur
+    }
 }
 
 enum FDA {
@@ -167,8 +180,8 @@ final class ScanModel {
     var agentRun: AgentRun?
     /// An agent being installed or signed in from the panel.
     var agentSetup: AgentSetup?
-    /// The first scan after launch hands itself to the agent once.
-    private var autoStarted = false
+    /// The first scan after launch opens the Clean Up panel once.
+    private var panelOpenedAfterLaunch = false
 
     /// The agent to use: the one picked last, else Claude Code, else Codex.
     var preferredAgent: InstalledAgent? {
@@ -188,19 +201,15 @@ final class ScanModel {
         withAnimation(.snappy) { agentRun = run }
     }
 
-    /// After the launch scan: start the agent straight away when one is ready,
-    /// else open the panel on the setup offer.
-    func autoStartIfReady() {
-        guard !autoStarted, agentEnv.loaded, tree != nil, !scanning,
+    /// After the launch scan: open the panel on the Clean Up button or the
+    /// setup offer. Nothing goes to an agent until the user clicks.
+    func openPanelAfterLaunchScan() {
+        guard !panelOpenedAfterLaunch, agentEnv.loaded, tree != nil, !scanning,
               !cleanupTrash.running, agentRun == nil else { return }
-        autoStarted = true
-        if let agent = preferredAgent {
-            startAgent(agent)
-        } else {
-            panelRequests += 1
-            // QA only: BZ_QA_SETUP=claude|codex presses the setup button.
-            if let kind = ProcessInfo.processInfo.environment["BZ_QA_SETUP"].flatMap(AgentKind.init) { setUp(kind) }
-        }
+        panelOpenedAfterLaunch = true
+        panelRequests += 1
+        // QA only: BZ_QA_SETUP=claude|codex presses the setup button.
+        if preferredAgent == nil, let kind = ProcessInfo.processInfo.environment["BZ_QA_SETUP"].flatMap(AgentKind.init) { setUp(kind) }
     }
 
     /// Bumped to ask the window to open the Clean Up panel.
@@ -225,6 +234,13 @@ final class ScanModel {
         }
     }
     var selection: Int? = nil
+
+    /// Select a node from a list, zooming out first if it is outside the
+    /// folder on screen (it would have nothing to outline).
+    func reveal(_ node: Int) {
+        if let tree, !tree.ancestry(node).contains(viewRoot) { viewRoot = 0 }
+        selection = node
+    }
     var hovered: Int? = nil
     var freeBytes: UInt64 = 0
     /// Rebuildable folders worth deleting, largest first.
@@ -332,7 +348,7 @@ final class ScanModel {
                 // Node IDs only belong to the scan that produced them.
                 guard self.tree === tree else { return }
                 cleanup = found
-                autoStartIfReady()
+                openPanelAfterLaunchScan()
             }
             NSLog("BZ scan done: %llu nodes, %llu unreadable dirs", UInt64(tree.count), tree.errors)
         }
