@@ -67,7 +67,8 @@ files are inventory, without any judgment about whether they can be removed.
 `quick-wins` returns:
 
 - `candidates`: path, kind, allocated/logical bytes, file count, category,
-  reason, `complete` and `requires_review=true`.
+  reason, `evidence`, cautious `impact`, `complete` and
+  `requires_review=true`.
 - `candidate_count`, `truncated`, `candidate_allocated_bytes` (all candidates)
   and `displayed_allocated_bytes` (only returned candidates).
 - `reclaimable_bytes=null`: the API does not predict recoverable space.
@@ -75,6 +76,11 @@ files are inventory, without any judgment about whether they can be removed.
 
 For candidates, `kind` is `directory`; `category` identifies the matched rule
 (for example `node_modules`), and `reason` is its shared panel label.
+`evidence` contains the matched name and, when relevant, its parent or marker
+name (such as `Cargo.toml` or `pyvenv.cfg`). `impact` describes why the folder
+is often rebuildable or re-downloadable and always leaves
+`reclaimable_bytes` null. These fields come from the same `Kind` and
+`Candidate` values used by the GUI.
 
 ## Shared Clean Up rules
 
@@ -88,12 +94,21 @@ The existing rules recognize `node_modules`, `.venv`, `venv` with `pyvenv.cfg`,
 Rust `target` next to `Cargo.toml`, `.next` next to `package.json`, Xcode
 `DerivedData`, device support folders, `Caches` under `Library` or
 `CoreSimulator`, `.cache`, `.npm`, `.gradle`, and `.bun/install/cache`.
-Marker checks use entry names, as the panel already does. No additional rules
-or activity filters are introduced by the CLI.
+Marker checks use entry names, as the panel already does. `Library/Caches`,
+`CoreSimulator/Caches` and `.cache` are treated as boundaries: qualifying
+direct child directories are listed individually, so the whole container is
+never offered as one quick win and nested candidates do not overlap. Apple
+managed cache names beginning with `com.apple` and system cache containers are
+skipped. These exclusions apply at the recognized container boundary; an
+explicit scan root already inside a `.Trash` or `com.apple` subtree changes
+that boundary, so inspect the requested `root` before interpreting matches.
+No additional rules or activity filters are introduced by the CLI.
 
 Both interfaces visit descendants, excluding the scan root itself and `.Trash`
 subtrees. A recognized directory is never descended into, even below the size
-threshold, so candidates never nest. Sort order is allocated bytes descending,
+threshold, so candidates never nest. The three granular cache containers are
+inspected only for their direct child directories and then treated as
+boundaries. Sort order is allocated bytes descending,
 then path ascending to make size ties deterministic. Default threshold:
 **50,000,000 bytes**, the panel's existing threshold. `--min-bytes` overrides it
 for the CLI and accepts bytes as an unsigned integer. Default output limit:
@@ -101,11 +116,15 @@ for the CLI and accepts bytes as an unsigned integer. Default output limit:
 
 For the same root and threshold, the CLI exposes the panel's candidates. An
 explicit root can be outside the home; there is no CLI-only home restriction.
+When the explicit root is itself `Library/Caches`, `CoreSimulator/Caches` or
+`.cache`, the root remains excluded as a target but its qualifying direct child
+directories are still listed.
 The default CLI root is the home folder, while the GUI defaults to the Data
 volume. Choose the same root when comparing their output.
 
 These name/structure heuristics are **not a safety assessment**. In particular,
-whole `.gradle`, `.npm`, `.cache` and `Library/Caches` directories can be listed.
+whole `.gradle` and `.npm` directories can be listed; granular cache
+containers themselves are never candidates, while their direct children can be.
 No project activity, ownership, local edits or reproducibility check is made.
 `reason` preserves the existing panel label; it is not a guarantee about a
 folder's contents. Every candidate needs review before any removal. Partially

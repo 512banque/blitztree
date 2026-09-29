@@ -86,7 +86,11 @@ struct UIPerformance {
             let parentName = ["Xcode", "Library", "CoreSimulator"].contains(rule.1 ?? "") ? rule.1! : "project-\(index)"
             let parent = fixture.add(parentName)
             let match = fixture.add(rule.0, to: parent, bytes: ReferenceCleanup.minBytes)
-            expected.insert(match)
+            if rule.0 == "Caches" || rule.0 == ".cache" {
+                expected.insert(fixture.add("cache-entry", to: match, bytes: ReferenceCleanup.minBytes))
+            } else {
+                expected.insert(match)
+            }
             if let marker = rule.1, marker == "pyvenv.cfg" { fixture.add(marker, to: match, directory: false) }
             if let marker = rule.1, ["Cargo.toml", "package.json"].contains(marker) { fixture.add(marker, to: parent, directory: false) }
         }

@@ -64,7 +64,8 @@ class AgentCLITests(unittest.TestCase):
             "no-manifest/node_modules/file", "no-manifest/.venv/file",
             "python/venv/pyvenv.cfg", "rust/Cargo.toml", "rust/target/file",
             "web/package.json", "web/.next/file", "Library/Developer/Xcode/DerivedData/file",
-            "Library/Caches/com.apple.example/file", "CoreSimulator/Caches/file",
+            "Library/Caches/com.example.editor/file", "Library/Caches/com.apple.example/file",
+            "CoreSimulator/Caches/com.example.simulator/file",
             "iOS DeviceSupport/file", "macOS DeviceSupport/file", "watchOS DeviceSupport/file",
             ".bun/install/cache/file",
         ]:
@@ -72,22 +73,31 @@ class AgentCLITests(unittest.TestCase):
         candidates = self.wins("--limit", "100")["candidates"]
         kinds = {Path(c["path"]).relative_to(self.home).as_posix(): c["category"] for c in candidates}
         self.assertEqual(kinds, {
-            ".gradle": "tool_caches", ".npm": "tool_caches", ".cache": "tool_caches",
+            ".gradle": "tool_caches", ".npm": "tool_caches", ".cache/unknown": "tool_caches",
             "no-manifest/node_modules": "node_modules", "no-manifest/.venv": "python_environment",
             "python/venv": "python_environment", "rust/target": "rust_build", "web/.next": "next_build",
-            "Library/Developer/Xcode/DerivedData": "xcode_derived_data", "Library/Caches": "app_caches",
-            "CoreSimulator/Caches": "app_caches", "iOS DeviceSupport": "device_support",
+            "Library/Developer/Xcode/DerivedData": "xcode_derived_data",
+            "Library/Caches/com.example.editor": "app_caches",
+            "CoreSimulator/Caches/com.example.simulator": "app_caches", "iOS DeviceSupport": "device_support",
             "macOS DeviceSupport": "device_support", "watchOS DeviceSupport": "device_support",
             ".bun/install/cache": "bun_cache",
         })
         self.assertTrue(all(c["requires_review"] for c in candidates))
         self.assertTrue(all(c["reason"] for c in candidates))
+        for candidate in candidates:
+            self.assertEqual(candidate["evidence"]["matched_name"], Path(candidate["path"]).name)
+            self.assertIn("classification", candidate["impact"])
+            self.assertIsNone(candidate["impact"]["reclaimable_bytes"])
+        cache = next(c for c in candidates if c["path"].endswith(".cache/unknown"))
+        self.assertEqual(cache["evidence"]["parent_name"], ".cache")
+        self.assertEqual(cache["impact"]["classification"], "usually_rebuildable")
         self.assertEqual(self.run_cli("quick-wins")["options"]["min_bytes"], 50_000_000)
         self.assertEqual(self.run_cli("quick-wins")["report"]["candidates"], [])
 
     def test_unrecognized_folders_and_trash_are_not_candidates(self):
         for path in ["unrelated/target/file", "unrelated/venv/file", "unrelated/.next/file",
                      "unrelated/Caches/file", "unrelated/DerivedData/file", "unrelated/install/cache/file",
+                     ".cache/.Trash/node_modules/file",
                      "swift/Package.swift", "swift/.build/file", ".Trash/node_modules/file"]:
             self.file(path)
         self.assertEqual(self.wins()["candidates"], [])
@@ -143,6 +153,22 @@ class AgentCLITests(unittest.TestCase):
         self.env.pop("HOME")
         report = self.run_cli("quick-wins", "--root", str(outside), "--min-bytes", "1")
         self.assertEqual([c["path"] for c in report["report"]["candidates"]], [str(outside / "node_modules")])
+
+    def test_explicit_cache_container_root_lists_children(self):
+        cases = [
+            (".cache", "pip"),
+            ("Library/Caches", "com.example.editor"),
+            ("Library/Developer/CoreSimulator/Caches", "com.example.simulator"),
+        ]
+        for container, child in cases:
+            self.file(f"{container}/{child}/content")
+        self.file("Library/Caches/com.apple.system/content")
+        self.file("Library/Caches/.Trash/hidden/content")
+        for container, child in cases:
+            report = self.run_cli("quick-wins", "--root", str(self.home / container), "--min-bytes", "1")
+            candidates = report["report"]["candidates"]
+            self.assertEqual([c["path"] for c in candidates], [str(self.home / container / child)])
+            self.assertNotIn(str(self.home / container), [c["path"] for c in candidates])
 
     def test_data_volume_firmlink_home(self):
         alias = Path("/System/Volumes/Data") / self.home.relative_to("/")
@@ -208,7 +234,7 @@ class AgentCLITests(unittest.TestCase):
         try:
             result = self.run_cli("quick-wins", "--min-bytes", "1")
             self.assertFalse(result["coverage"]["complete"])
-            self.assertEqual(result["report"]["candidates"][0]["path"], str(self.home / ".cache"))
+            self.assertEqual(result["report"]["candidates"][0]["path"], str(self.home / ".cache/pip"))
             self.assertFalse(result["report"]["candidates"][0]["complete"])
             self.assertTrue(result["report"]["candidates"][0]["requires_review"])
             directory = next(d for d in result["report"]["inventory"]["largest_directories"] if d["path"] == str(self.home / ".cache/pip"))
@@ -224,7 +250,7 @@ class AgentCLITests(unittest.TestCase):
         self.assertIn(str(self.home / "Documents/archives"), [d["path"] for d in scan["largest_directories"]])
         wins = self.wins()
         self.assertEqual(wins["inventory"], scan)
-        self.assertEqual([c["path"] for c in wins["candidates"]], [str(self.home / ".cache")])
+        self.assertEqual([c["path"] for c in wins["candidates"]], [str(self.home / ".cache/pip")])
 
     def test_inventory_is_returned_even_outside_home(self):
         outside = self.root / "outside"

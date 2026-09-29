@@ -118,8 +118,25 @@ pub fn quick_wins(scan: &Tree, options: &Options) -> Value {
         .take(options.limit)
         .map(|c| {
             let mut value = entry(scan, c.node as usize);
+            let evidence = c.evidence(scan);
+            let mut evidence_value = json!({
+                "matched_name": evidence.matched_name,
+            });
+            if let Some(parent_name) = evidence.parent_name {
+                evidence_value["parent_name"] = json!(parent_name);
+            }
+            if let Some(marker_name) = evidence.marker_name {
+                evidence_value["marker_name"] = json!(marker_name);
+            }
+            let impact = c.kind.impact();
             value["category"] = json!(c.kind.id());
             value["reason"] = json!(c.kind.description());
+            value["evidence"] = evidence_value;
+            value["impact"] = json!({
+                "classification": impact.class,
+                "note": impact.note,
+                "reclaimable_bytes": Value::Null,
+            });
             value["requires_review"] = json!(true);
             value
         })
