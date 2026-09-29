@@ -252,7 +252,7 @@ fn bounded_json_string(value: *const c_char, name: &str) -> Result<String, Strin
 /// it and must release it with `bz_json_free`.
 #[no_mangle]
 pub extern "C" fn bz_snapshot_json(h: *mut BzScan) -> *mut c_char {
-    ffi_result(|| snapshot_for_handle(h).map(|value| value.to_string()))
+    ffi_result(|| snapshot_for_handle(h).and_then(|value| snapshot::serialize_bounded(&value)))
 }
 
 /// Compare two snapshot JSON strings without scanning or touching the
@@ -286,7 +286,7 @@ pub extern "C" fn bz_save_snapshot(h: *mut BzScan, destination: *const c_char) -
             return Err("destination cannot be empty".into());
         }
         let value = snapshot_for_handle(h)?;
-        let text = value.to_string();
+        let text = snapshot::serialize_bounded(&value)?;
         let path = PathBuf::from(destination);
         snapshot::save_exclusive(&path, &text)?;
         Ok(json!({

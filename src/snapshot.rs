@@ -8,7 +8,7 @@ use crate::{Tree, NO_PARENT};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub const SCHEMA_VERSION: u64 = 1;
@@ -50,7 +50,9 @@ struct Change {
 /// Normalize an absolute path lexically, without resolving symlinks or
 /// opening any directory.  The CLI passes a path resolved by its no-cloud
 /// policy; the FFI uses this helper because a GUI snapshot must not start a
-/// second filesystem walk just to write its root name.
+/// second filesystem walk just to write its root name.  Parent components are
+/// rejected before normalization because a symlink can make the kernel resolve
+/// `a/../b` differently from lexical path processing.
 pub fn normalize_root(root: &Path) -> Result<String, String> {
     let absolute = if root.is_absolute() {
         root.to_owned()
@@ -68,9 +70,7 @@ pub fn normalize_root(root: &Path) -> Result<String, String> {
             Component::RootDir => normalized.push("/"),
             Component::CurDir => {}
             Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err("Snapshot root escapes the filesystem root".into());
-                }
+                return Err("Snapshot root cannot contain '..' components".into());
             }
             Component::Normal(part) => normalized.push(part),
         }
@@ -82,6 +82,53 @@ pub fn normalize_root(root: &Path) -> Result<String, String> {
         return Err("Snapshot root must be an absolute path".into());
     }
     Ok(text.to_string())
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let remaining = MAX_SNAPSHOT_BYTES.saturating_sub(self.bytes.len());
+        if bytes.len() > remaining {
+            self.exceeded = true;
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "snapshot exceeds 64 MiB",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialize a snapshot JSON value without ever producing more than the
+/// public 64 MiB payload limit.  The same bound is used by the CLI and C/Swift
+/// bridge so a large tree cannot be copied into an unbounded JSON string.
+pub fn serialize_bounded(value: &Value) -> Result<String, String> {
+    let mut writer = BoundedJsonWriter::new();
+    let result = serde_json::to_writer(&mut writer, value);
+    if writer.exceeded {
+        return Err("Snapshot is larger than 64 MiB".into());
+    }
+    result.map_err(|e| format!("Cannot serialize snapshot: {e}"))?;
+    String::from_utf8(writer.bytes)
+        .map_err(|_| "Serialized snapshot is not valid UTF-8".to_string())
 }
 
 fn validate_canonical_root(root: &str) -> Result<(), String> {
@@ -721,13 +768,23 @@ mod tests {
     }
 
     #[test]
-    fn normalize_root_is_lexical_only() {
+    fn normalize_root_rejects_parent_components() {
+        assert!(normalize_root(Path::new("/root/a/../b")).is_err());
         assert_eq!(
-            normalize_root(Path::new("/root/a/../b")).unwrap(),
-            "/root/b"
+            normalize_root(Path::new("/root/a/./b")).unwrap(),
+            "/root/a/b"
         );
         assert!(validate_canonical_root("relative").is_err());
         assert!(validate_canonical_root("/root/../b").is_err());
+    }
+
+    #[test]
+    fn bounded_serialization_rejects_oversize_payload() {
+        let value = json!({"payload": "x".repeat(MAX_SNAPSHOT_BYTES)});
+        assert_eq!(
+            serialize_bounded(&value).unwrap_err(),
+            "Snapshot is larger than 64 MiB"
+        );
     }
 
     #[test]

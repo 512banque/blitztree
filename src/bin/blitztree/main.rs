@@ -225,7 +225,7 @@ fn run_snapshot(args: &[String]) -> Result<Value, (i32, String)> {
         .as_secs();
     let value =
         snapshot::snapshot_value(&root, &tree, generated, tree.errors).map_err(|e| (1, e))?;
-    let text = serde_json::to_string(&value).map_err(|e| (1, e.to_string()))?;
+    let text = snapshot::serialize_bounded(&value).map_err(|e| (1, e))?;
     let output = PathBuf::from(output_arg);
     snapshot::save_exclusive(&output, &text).map_err(|e| (1, e))?;
     let entries = snapshot::snapshot_entry_count(&value).map_err(|e| (1, e))?;
