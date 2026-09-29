@@ -42,6 +42,17 @@ for legacy in (True, False):
         source = (subprocess.check_output(["git", "show", f"{args.baseline}:app/{name}"], cwd=ROOT).decode()
                   if legacy else (ROOT / "app" / name).read_text())
         source = re.sub(r"\bprivate\s+", "", source)
+        if not args.real and name == "TreemapView.swift":
+            # Context-menu behavior is checked with real models by the cleanup
+            # integration tests. Rendering fixtures never invoke these actions.
+            source, menus = re.subn(
+                r"final class NodeMenu: NSObject \{.*?\n\}(?=\n\nstruct TreemapView)",
+                """enum NodeMenu {
+    static func popUp(path: String, with event: NSEvent, for view: NSView) {}
+    static func popUp(node: Int, model: ScanModel, with event: NSEvent, for view: NSView) {}
+}""", source, flags=re.S)
+            if menus != 1:
+                raise SystemExit("NodeMenu shape changed; update the rendering fixture")
         source = source.replace("window?.backingScaleFactor ?? 2", "window?.backingScaleFactor ?? renderingScale")
         if legacy and name == "Treemap.swift":
             baseline_has_renderer = "enum TreemapRenderer" in source

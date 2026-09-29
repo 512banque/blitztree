@@ -464,12 +464,17 @@ final class TreemapNSView: NSView {
         }
     }
 
+    func contextNode(at point: NSPoint) -> Int? {
+        Scan.hit(labelHits, point) ?? hit(point)?.node
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        guard let model, let tree = model.tree, let leaf = hit(p) else { return }
-        model.selection = leaf.node
+        guard let model, let tree = model.tree, lastTreeID == ObjectIdentifier(tree),
+              let node = contextNode(at: p) else { return }
+        model.selection = node
         syncOverlay()
-        NodeMenu.popUp(path: tree.path(leaf.node), with: event, for: self)
+        NodeMenu.popUp(node: node, model: model, with: event, for: self)
     }
 }
 
@@ -525,46 +530,85 @@ nonisolated private enum Scan {
     }
 }
 
-/// Right-click menu for a file or folder, shared by the treemap and rings.
+/// One captured selection and one menu for the outline, treemap and rings.
 final class NodeMenu: NSObject {
     private static let shared = NodeMenu()
 
-    static func popUp(path: String, with event: NSEvent, for view: NSView) {
+    final class Target {
+        weak var model: ScanModel?
+        let tree: Tree
+        let item: CleanupItem
+
+        init(node: Int, tree: Tree, model: ScanModel) {
+            self.model = model
+            self.tree = tree
+            item = CleanupItem(node: node, path: tree.path(node), display: tree.displayPath(node),
+                               kind: "Selected item", bytes: tree.alloc[node], root: tree.path(0))
+        }
+
+        var blocked: String? {
+            guard let model, model.tree === tree else { return "The scan changed; select the item again" }
+            guard !model.scanning, !model.cleanupTrash.running else { return "Wait for the current operation to finish" }
+            guard model.agentRun == nil else { return "Close the AI cleanup plan before moving another item" }
+            return item.blocked
+        }
+    }
+
+    static func menu(node: Int, model: ScanModel) -> NSMenu? {
+        guard let tree = model.tree, (0..<tree.count).contains(node) else { return nil }
+        let target = Target(node: node, tree: tree, model: model)
         let menu = NSMenu()
+        menu.autoenablesItems = false
         for (title, action) in [("Reveal in Finder", #selector(revealInFinder(_:))),
                                 ("Copy Path", #selector(copyPath(_:))),
                                 ("Move to Trash", #selector(moveToTrash(_:)))] {
-            if action == #selector(moveToTrash(_:)) { menu.addItem(.separator()) }
+            let trash = action == #selector(moveToTrash(_:))
+            if trash { menu.addItem(.separator()) }
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = shared
-            item.representedObject = path
+            item.representedObject = target
+            item.isEnabled = !trash || target.blocked == nil
+            item.toolTip = trash ? target.blocked : target.item.display
             menu.addItem(item)
         }
+        return menu
+    }
+
+    static func popUp(node: Int, model: ScanModel, with event: NSEvent, for view: NSView) {
+        guard let menu = menu(node: node, model: model) else { return }
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
     @objc private func revealInFinder(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        guard let target = sender.representedObject as? Target else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: target.item.path)])
     }
 
     @objc private func copyPath(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
+        guard let target = sender.representedObject as? Target else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
+        NSPasteboard.general.setString(target.item.path, forType: .string)
     }
 
     @objc private func moveToTrash(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        let url = URL(fileURLWithPath: path)
+        guard let target = sender.representedObject as? Target, let model = target.model,
+              target.blocked == nil else { return }
         let alert = NSAlert()
-        alert.messageText = "Move \u{201C}\(url.lastPathComponent)\u{201D} to Trash?"
-        alert.informativeText = path
+        alert.messageText = "Move \u{201C}\(URL(fileURLWithPath: target.item.path).lastPathComponent)\u{201D} to Trash?"
+        alert.informativeText = target.item.display
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            // Note: sizes refresh on next rescan; v1 keeps it simple.
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // Modal dialogs run an event loop; a rescan may have finished meanwhile.
+        if let reason = target.blocked {
+            let failure = NSAlert()
+            failure.messageText = "The item couldn't be moved"
+            failure.informativeText = reason
+            failure.runModal()
+            return
+        }
+        model.cleanupTrash.start([target.item]) { _ in
+            model.startScan()
         }
     }
 }

@@ -84,11 +84,15 @@ final class CleanupTrashBatch {
 struct CleanupPanel: View {
     let model: ScanModel
     @State private var picked: Set<Int> = []
+    @State private var pickedTreeID: ObjectIdentifier?
     @State private var confirming = false
 
     private var agent: InstalledAgent? { model.preferredAgent }
 
-    private var pickedItems: [CleanupItem] { model.cleanup.filter { picked.contains($0.id) && $0.target != nil } }
+    private var pickedItems: [CleanupItem] {
+        guard pickedTreeID == model.tree.map(ObjectIdentifier.init) else { return [] }
+        return model.cleanup.filter { picked.contains($0.id) && $0.target != nil }
+    }
     private var pickedBytes: UInt64 { pickedItems.reduce(0) { $0 + $1.bytes } }
     private var totalBytes: UInt64 { model.cleanup.reduce(0) { $0 + $1.bytes } }
 
@@ -111,10 +115,10 @@ struct CleanupPanel: View {
         } message: {
             Text("You can put them back from the Trash until you empty it. The tools that made them rebuild them when needed.")
         }
-        .alert("Some folders couldn't be moved", isPresented: .constant(!model.cleanupTrash.failures.isEmpty)) {
-            Button("OK") { model.cleanupTrash.clearFailures() }
-        } message: {
-            Text(model.cleanupTrash.failures.joined(separator: "\n"))
+        .onChange(of: model.tree.map(ObjectIdentifier.init)) {
+            picked = []
+            pickedTreeID = nil
+            confirming = false
         }
     }
 
@@ -134,7 +138,11 @@ struct CleanupPanel: View {
                 HStack(alignment: .top, spacing: 8) {
                     Toggle("", isOn: Binding(
                         get: { picked.contains(item.id) },
-                        set: { on in if on { picked.insert(item.id) } else { picked.remove(item.id) } }
+                        set: { on in
+                            let treeID = model.tree.map(ObjectIdentifier.init)
+                            if pickedTreeID != treeID { picked = []; pickedTreeID = treeID }
+                            if on { picked.insert(item.id) } else { picked.remove(item.id) }
+                        }
                     ))
                     .labelsHidden()
                     .toggleStyle(.checkbox)
@@ -264,7 +272,9 @@ struct CleanupPanel: View {
     }
 
     private func trashPicked() {
-        model.cleanupTrash.start(pickedItems) { _ in
+        let items = pickedItems
+        guard !items.isEmpty, !model.scanning, model.agentRun == nil else { return }
+        model.cleanupTrash.start(items) { _ in
             picked = []
             // The batch clears its busy state before this final rescan.
             model.startScan()

@@ -374,6 +374,11 @@ enum Fmt {
                     for (a, b) in zip(tm.labels, oldTM.labels) {
                         precondition(a.node == b.node && a.strip == b.strip && a.region == b.region && a.name == b.name)
                     }
+                    for label in tm.labelHits {
+                        let center = CGPoint(x: label.rect.midX, y: label.rect.midY)
+                        precondition(tm.contextNode(at: center) == Scan.hit(tm.labelHits, center),
+                                     "context menus must prefer directory labels over files")
+                    }
                     for i in 0..<256 {
                         let p = CGPoint(x: Double((i * 7919) % (Int(width) + 2)) - 1,
                                         y: Double((i * 1543) % (Int(height) + 2)) - 1)
