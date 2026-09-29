@@ -4,6 +4,18 @@
 
 A fast, native disk-space treemap for macOS, in the spirit of WizTree. It scans a whole Mac (3.6M files) in about 14 seconds.
 
+This is [Kevin Richard's fork](https://github.com/512banque/blitztree) of
+[Ahmed Khaleel's BlitzTree](https://github.com/ahmedkhaleel2004/blitztree).
+It includes upstream v0.5.6 and these contributions:
+
+- [#3: cleanup validation](https://github.com/ahmedkhaleel2004/blitztree/pull/3) — shared path guards, exact command arguments, and validated Trash receipts.
+- [#4: path comparison performance](https://github.com/ahmedkhaleel2004/blitztree/pull/4) — fewer temporary allocations in ranking and hard-link accounting.
+- [#5: earlier scan results](https://github.com/ahmedkhaleel2004/blitztree/pull/5) — show the completed tree before volume capacity arrives, then refresh the maps.
+
+The read-only JSON CLI from [#2](https://github.com/ahmedkhaleel2004/blitztree/pull/2)
+is already part of upstream and is included here too. The original attribution
+and MIT license are retained.
+
 <p>
   <img src="assets/screenshot.png" width="49%" alt="BlitzTree treemap view of /Applications">
   <img src="assets/screenshot-rings.png" width="49%" alt="BlitzTree rings view of /Applications">
@@ -11,9 +23,13 @@ A fast, native disk-space treemap for macOS, in the spirit of WizTree. It scans 
 
 ## Install
 
-**[Download BlitzTree.dmg](https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/BlitzTree.dmg)** and drag the app into Applications. Requires Apple Silicon and macOS 14 or later.
+Build this fork using the [source instructions below](#build-from-source).
+Requires Apple Silicon and macOS 14 or later. Local builds use an ad-hoc
+signature and are not notarized; grant Full Disk Access when prompted, then relaunch.
 
-Signed with a Developer ID and notarized by Apple, so it opens like any other app. Grant Full Disk Access when prompted, then relaunch.
+Automatic updates are disabled so an upstream binary cannot replace this fork's
+changes. This fork does not publish binary releases. For the maintainer's signed
+and notarized version, see [upstream releases](https://github.com/ahmedkhaleel2004/blitztree/releases).
 
 ## Features
 
@@ -24,7 +40,7 @@ Signed with a Developer ID and notarized by Apple, so it opens like any other ap
 - AI cleanup: click "Clean up with Claude Code" (or Codex) and your own agent plans what can go, live in the panel, while the treemap lights up those folders. BlitzTree does the cleanup itself, in two steps you approve: move to Trash, then delete for good. No agent installed? One click sets up Codex (free with a ChatGPT account) or Claude Code
 - Live progress while scanning, and an optional free-space block
 - Native AppKit/SwiftUI, with the Liquid Glass design on macOS 26 and later
-- No telemetry. BlitzTree itself only goes online to check GitHub for updates once a day (installed when you quit); the AI cleanup only runs when you click it, using your own agent, which sends folder paths and sizes from the scan (never file contents) to Anthropic or OpenAI
+- No telemetry or automatic update checks in this fork. The AI cleanup only runs when you click it, using your own agent, which sends folder paths and sizes from the scan (never file contents) to Anthropic or OpenAI
 
 ## Performance
 
@@ -48,7 +64,7 @@ Sizes are allocated bytes, matching `du`. Hard-linked files count once, the scan
 
 The agent runs headless and read-only: it only writes a plan from the scan BlitzTree already has. BlitzTree then acts on it behind its own checks, whatever the plan says:
 
-- Only paths inside your home folder, never Documents, Desktop, Photos, iCloud Drive, Mail, keychains or `~/.ssh` (build output such as `node_modules` inside them is allowed, and so are the Codex app's chat folders in `~/Documents/Codex`), never a git repository or a whole folder like `~/Library/Caches`
+- Agent Trash actions require scanned paths inside your home folder. Photos, iCloud Drive, Mail, keychains and `~/.ssh` remain protected. Documents and Desktop allow rebuildable project folders, plus dated Codex chat folders under `~/Documents/Codex`. Git metadata and whole shared folders such as `~/Library/Caches` remain protected.
 - Only each tool's own cache cleanup commands (`uv cache clean`, `brew cleanup`, `npm cache clean` and similar, plus `xcrun simctl` for Xcode simulator runtimes and device data), with no shell syntax
 - Codex chats and projects you used in the last 2 days are left alone
 - Caches of apps that are open are skipped until you quit them
@@ -65,6 +81,22 @@ cargo test --release    # engine tests
 ```
 
 The Rust engine hands the finished tree to the Swift UI as flat arrays over a C interface, with no copying. `BlitzTree <path>` scans a specific folder.
+
+Source builds do not use Apple Developer credentials. `release.sh` is disabled
+until a release process for this fork is configured.
+
+## Track upstream
+
+For a fresh clone, keep this fork as `origin` and the original project as `upstream`:
+
+```sh
+git clone https://github.com/512banque/blitztree.git
+cd blitztree
+git remote add upstream https://github.com/ahmedkhaleel2004/blitztree.git
+git fetch upstream
+```
+
+Future upstream changes can be merged into this fork while retaining the patches.
 
 ## JSON CLI for agents and scripts
 

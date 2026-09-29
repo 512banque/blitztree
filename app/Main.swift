@@ -1,12 +1,7 @@
-import Sparkle
 import SwiftUI
 
 @main
 struct BlitzTreeApp: App {
-    /// Sparkle checks the latest GitHub release's appcast once a day,
-    /// downloads the EdDSA-signed dmg and installs it when the app quits.
-    private let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-
     init() {
         // `BlitzTree /some/path` is a scan target, not a document to open.
         // Left to AppKit, the path becomes an open-file request and SwiftUI
@@ -20,10 +15,5 @@ struct BlitzTreeApp: App {
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.automatic)
-        .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { updater.checkForUpdates(nil) }
-            }
-        }
     }
 }

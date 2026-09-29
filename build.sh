@@ -12,23 +12,9 @@ export MACOSX_DEPLOYMENT_TARGET=$MIN_MACOS
 echo "==> Rust engine"
 cargo build --release
 
-# Sparkle (auto-updates), pinned by checksum and cached outside git.
-SPARKLE_VERSION=2.10.0
-SPARKLE_SHA256=c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
-SPARKLE=.cache/sparkle-$SPARKLE_VERSION
-if [[ ! -d "$SPARKLE/Sparkle.framework" ]]; then
-    echo "==> Sparkle $SPARKLE_VERSION"
-    mkdir -p "$SPARKLE"
-    curl -fsSL -o "$SPARKLE.tar.xz" \
-        "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
-    echo "$SPARKLE_SHA256  $SPARKLE.tar.xz" | shasum -a 256 -c --quiet
-    tar -xf "$SPARKLE.tar.xz" -C "$SPARKLE" Sparkle.framework bin
-    rm "$SPARKLE.tar.xz"
-fi
-
 APP=build/BlitzTree.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> Swift UI"
 swiftc app/*.swift \
@@ -37,12 +23,7 @@ swiftc app/*.swift \
     -target arm64-apple-macos$MIN_MACOS \
     -L target/release -lblitztree \
     -framework AppKit -framework SwiftUI \
-    -F "$SPARKLE" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     -o "$APP/Contents/MacOS/BlitzTree"
-# The XPC services only serve sandboxed apps; BlitzTree isn't sandboxed.
-ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
-rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
-       "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,10 +43,6 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleIconName</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Ahmed Khaleel</string>
-    <key>SUFeedURL</key><string>https://github.com/ahmedkhaleel2004/blitztree/releases/latest/download/appcast.xml</string>
-    <key>SUPublicEDKey</key><string>WtmMufGnr61vIAeONfQ4650BqnlBZ1uuD1gmngkX+os=</string>
-    <key>SUEnableAutomaticChecks</key><true/>
-    <key>SUAutomaticallyUpdate</key><true/>
 </dict>
 </plist>
 EOF
@@ -77,28 +54,7 @@ xcrun actool "$PWD/assets/AppIcon.icon" --compile "$PWD/$APP/Contents/Resources"
     --platform macosx --target-device mac --minimum-deployment-target $MIN_MACOS \
     --app-icon AppIcon --output-partial-info-plist "$PWD/build/icon-partial.plist" >/dev/null
 
-# Prefer a real identity: stable code requirement -> TCC/FDA grants survive
-# rebuilds. Developer ID (paid program) with the hardened runtime and a secure
-# timestamp is what notarization needs; Apple Development is the fallback.
-# The Developer ID key lives in its own keychain so codesign never prompts;
-# unlock it if this machine has one.
-SIGN_KC="$HOME/Library/Keychains/blitztree-signing.keychain-db"
-SIGN_PASS="$HOME/.config/blitztree-signing/keychain.pass"
-if [[ -f "$SIGN_KC" && -f "$SIGN_PASS" ]]; then
-    security unlock-keychain -p "$(<"$SIGN_PASS")" "$SIGN_KC"
-fi
-IDS=$(security find-identity -v -p codesigning 2>/dev/null)
-IDENTITY=$(awk -F'"' '/Developer ID Application/{print $2; exit}' <<<"$IDS")
-# Sparkle's helpers are signed inside out before the app (never --deep).
-SPARKLE_IN_APP="$APP/Contents/Frameworks/Sparkle.framework"
-if [[ -n "$IDENTITY" ]]; then
-    SIGN=(codesign --force --options runtime --timestamp --sign "$IDENTITY")
-else
-    IDENTITY=$(awk -F'"' '/Apple Development/{print $2; exit}' <<<"$IDS")
-    SIGN=(codesign --force --sign "${IDENTITY:--}")
-fi
-"${SIGN[@]}" "$SPARKLE_IN_APP/Versions/B/Autoupdate"
-"${SIGN[@]}" "$SPARKLE_IN_APP/Versions/B/Updater.app"
-"${SIGN[@]}" "$SPARKLE_IN_APP"
-"${SIGN[@]}" "$APP"
+# Source builds of this fork use an ad-hoc signature, without signing keys
+# or notarization credentials. Upstream's signed releases are separate.
+codesign --force --sign - "$APP"
 echo "==> Built $APP"
