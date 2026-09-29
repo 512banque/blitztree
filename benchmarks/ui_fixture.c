@@ -71,3 +71,15 @@ void bz_free(BzScan *h) {
     free(h->parents); free(h->alloc); free(h->flags); free(h->nfiles);
     free(h->child_off); free(h->children); free(h->name_off); free(h->name_blob); free(h);
 }
+
+// Snapshot actions are outside this in-memory benchmark. Keep the production
+// Swift model linkable without reading or writing any fixture data.
+char *bz_snapshot_json(BzScan *h) { (void)h; return NULL; }
+char *bz_compare_snapshots(const char *before_json, const char *after_json,
+                           uint32_t limit) {
+    (void)before_json; (void)after_json; (void)limit; return NULL;
+}
+char *bz_save_snapshot(BzScan *h, const char *destination) {
+    (void)h; (void)destination; return NULL;
+}
+void bz_json_free(char *json) { free(json); }

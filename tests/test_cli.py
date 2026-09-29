@@ -36,6 +36,11 @@ class AgentCLITests(unittest.TestCase):
     def wins(self, *args):
         return self.run_cli("quick-wins", "--min-bytes", "1", *args)["report"]
 
+    def save_snapshot(self, destination):
+        return self.run_cli(
+            "snapshot", "--root", str(self.home), "--output", str(destination)
+        )
+
     def test_sizes_hardlinks_and_no_mutations(self):
         data = self.file("file")
         os.link(data, self.home / "second-name")
@@ -288,6 +293,62 @@ class AgentCLITests(unittest.TestCase):
         self.assertTrue(all(r == reports[0] for r in reports))
         self.assertEqual([c["path"] for c in reports[0]["candidates"]], [str(destination.parent)])
         self.assertEqual(reports[0]["candidate_allocated_bytes"], source.stat().st_blocks * 512)
+
+    def test_snapshot_is_complete_directory_inventory_and_exclusive(self):
+        self.file("a/one", size=8192)
+        self.file("a/two", size=8192)
+        before_path = self.root / "before.json"
+        ack = self.save_snapshot(before_path)
+        self.assertEqual(ack["kind"], "blitztree_snapshot")
+        self.assertEqual(ack["coverage"], {"complete": True, "errors": 0})
+        self.assertEqual(ack["entry_count"], 2)
+        snapshot = json.loads(before_path.read_text())
+        self.assertEqual(snapshot["entries"][0]["path"], ".")
+        self.assertEqual(
+            {entry["path"] for entry in snapshot["entries"]}, {".", "a"}
+        )
+        self.assertEqual(before_path.stat().st_mode & 0o777, 0o600)
+        self.assertIn("error", self.run_cli(
+            "snapshot", "--root", str(self.home), "--output", str(before_path), code=1
+        ))
+        tilde_path = self.root / "tilde.json"
+        tilde_ack = self.run_cli("snapshot", "--root", "~", "--output", str(tilde_path))
+        self.assertEqual(tilde_ack["root"], str(self.home))
+
+    def test_diff_has_signed_changes_certainty_and_limit(self):
+        self.file("small", size=8192)
+        self.file("stable", size=8192)
+        before_path = self.root / "before.json"
+        self.save_snapshot(before_path)
+        self.file("largest/file", size=65536)
+        after_path = self.root / "after.json"
+        self.save_snapshot(after_path)
+        diff = self.run_cli(
+            "diff", "--before", str(before_path), "--after", str(after_path), "--limit", "1"
+        )
+        self.assertEqual(diff["complete"], True)
+        self.assertEqual(diff["total_changes"], 1)
+        self.assertEqual(diff["changes"][0]["path"], "largest")
+        self.assertEqual(diff["changes"][0]["status"], "added")
+        self.assertEqual(diff["changes"][0]["before_bytes"], None)
+        self.assertEqual(diff["changes"][0]["delta_bytes"], 65536)
+        self.assertEqual(diff["before_bytes"], 8192 * 2)
+        self.assertGreater(diff["after_bytes"], diff["before_bytes"])
+
+    def test_snapshot_and_diff_reject_scan_only_options_and_bad_inputs(self):
+        self.file("content")
+        output = self.root / "snapshot.json"
+        for args in [
+            ("snapshot", "--root", str(self.home)),
+            ("snapshot", "--root", str(self.home), "--output", str(output), "--limit", "1"),
+            ("diff", "--before", str(output), "--after", str(output), "--min-bytes", "1"),
+            ("diff", "--before", str(output), "--after", str(output), "--limit", "0"),
+        ]:
+            self.assertIn("error", self.run_cli(*args, code=2))
+        self.assertIn(
+            "error",
+            self.run_cli("diff", "--before", str(output), "--after", str(output), code=1),
+        )
 
 
 if __name__ == "__main__":

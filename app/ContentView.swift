@@ -5,6 +5,7 @@ import AppKit
 struct ContentView: View {
     @State private var model = ScanModel()
     @State private var showTable = true
+    @State private var showComparison = false
     @AppStorage("bz.showCleanup") private var showCleanup = false
     @AppStorage("bz.listWidth") private var listWidth = 390.0
 
@@ -65,6 +66,9 @@ struct ContentView: View {
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 520)
         }
         .toolbar { toolbar }
+        .sheet(isPresented: $showComparison) {
+            if let tree = model.tree { ScanComparisonView(tree: tree) }
+        }
         .task {
             model.agentEnv = await AgentLocator.find()
             model.openPanelAfterLaunchScan()
@@ -182,6 +186,14 @@ struct ContentView: View {
                 Label("Free Space", systemImage: "square.dashed")
             }
             .help("Show free space in the map")
+
+            Button {
+                showComparison = true
+            } label: {
+                Label("What grew?", systemImage: "chart.line.uptrend.xyaxis")
+            }
+            .disabled(model.tree == nil || model.scanning || model.cleanupTrash.running)
+            .help("Save a snapshot or compare folder sizes with a previous scan")
 
             Toggle(isOn: $showTable) {
                 Label("Directory List", systemImage: "sidebar.leading")

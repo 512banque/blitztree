@@ -1,9 +1,11 @@
-# Read-only JSON CLI
+# JSON CLI and saved scans
 
 The `blitztree` executable exposes a versioned JSON interface over the same Rust
 scanner as the GUI. It does not launch the GUI, an AI agent, a shell, a server or
-any network request. It reads filesystem metadata; it never deletes files or
-reads regular file contents. No daemon or API key is needed.
+any network request. Scans read filesystem metadata and never read the scanned
+regular-file contents. `snapshot` writes only the explicitly requested JSON
+output, while `diff` reads only the explicitly named snapshot files. No daemon
+or API key is needed.
 
 ```sh
 cargo build --locked --release --features cli --bin blitztree
@@ -15,8 +17,9 @@ cargo build --locked --release --features cli --bin blitztree
 ```
 
 This optional binary is built from source on macOS; it is not included in the
-app bundle or DMG. The default GUI build does not enable `cli` or compile its
-JSON dependencies. For an optional installation into Cargo's bin directory:
+app bundle or DMG. The `cli` feature only enables the binary; the shared Rust
+library also contains the snapshot/comparison JSON codec used by the GUI. For
+an optional installation into Cargo's bin directory:
 
 ```sh
 cargo install --locked --path . --features cli --bin blitztree
@@ -85,6 +88,35 @@ name (such as `Cargo.toml` or `pyvenv.cfg`). `impact` describes why the folder
 is often rebuildable or re-downloadable and always leaves
 `reclaimable_bytes` null. These fields come from the same `Kind` and
 `Candidate` values used by the GUI.
+
+## Saved snapshots and comparisons
+
+`snapshot --root PATH --output FILE` performs one metadata scan and writes a
+version-1 `blitztree_snapshot` containing every directory, including the root
+as `path: "."`. Each entry has `allocated_bytes`, `logical_bytes` and
+`complete`; descendant totals are already included and must not be summed.
+The output file is created exclusively with mode `0600`; an existing file is
+never replaced. The command prints an acknowledgement with the root,
+`generated_at_unix`, entry count and `coverage`.
+
+`diff --before FILE --after FILE [--limit N]` reads two saved snapshots and
+does not scan. Both roots must be the same normalized absolute path. The
+comparison contains `before_generated_at_unix`, `after_generated_at_unix`,
+`before_bytes`, `after_bytes`, `total_delta_bytes`, `total_changes` and a
+limited `changes` list. Changes exclude the root (its totals are the top-level
+fields), are ordered by positive delta descending, then negative delta, then
+uncertain paths, and include `path`, `before_bytes`, `after_bytes`,
+`delta_bytes` and `status` (`grew`, `shrunk`, `added`, `removed` or
+`uncertain`). `total_delta_bytes` is `null` when either scan is incomplete;
+uncertain entries also have a null delta. A missing path is treated as zero
+only when a complete ancestor on the snapshot side certifies that the path was
+absent. The default limit is **100**, maximum **1000**. Snapshot and diff do
+not accept `--min-bytes`.
+
+Snapshot JSON is bounded to 64 MiB when saved, read by the CLI, or passed over
+the C bridge. Invalid types, schema versions, roots, paths, duplicate entries,
+missing ancestors and inconsistent completeness are rejected before a diff is
+produced.
 
 ## Shared Clean Up rules
 

@@ -60,6 +60,14 @@ nonisolated final class Tree: @unchecked Sendable {
         return String(cString: label)
     }
 
+    func snapshotJSON() throws -> Data {
+        try SnapshotIO.consume(bz_snapshot_json(handle))
+    }
+
+    func saveSnapshot(to url: URL) throws {
+        _ = try url.path.withCString { try SnapshotIO.consume(bz_save_snapshot(handle, $0)) }
+    }
+
     func name(_ i: Int) -> String {
         let start = Int(nameOff[i])
         let end = Int(nameOff[i + 1])

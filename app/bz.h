@@ -31,4 +31,15 @@ const char *bz_cleanup_description(BzScan *h, uint64_t index);
 
 void bz_free(BzScan *h);
 
+// Versioned metadata-only snapshots and comparisons. Returned strings are
+// owned by the caller until bz_json_free; success and failure are compact JSON.
+// Call bz_take_tree before requesting a snapshot; snapshot calls only read the
+// materialized tree and may run while the UI reads its immutable arrays.
+// A snapshot has one entry for every directory in the finished scan. A
+// comparison never scans and reports uncertain deltas as null.
+char *bz_snapshot_json(BzScan *h);
+char *bz_compare_snapshots(const char *before_json, const char *after_json, uint32_t limit);
+char *bz_save_snapshot(BzScan *h, const char *destination);
+void bz_json_free(char *json);
+
 #endif
