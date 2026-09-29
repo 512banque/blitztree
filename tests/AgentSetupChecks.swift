@@ -31,15 +31,17 @@ enum AgentSetupChecks {
         precondition(noisyMessage.contains("status 9"), "both output pipes should drain without blocking")
 
         let descendantPIDFile = root.appendingPathComponent("descendant.pid")
-        let descendant = try script(in: root, body: #"sleep 30 & child=$!; echo $child > "# + descendantPIDFile.path + #"; printf 'descendant failed\n' >&2; exit 7"#)
+        let descendant = try script(in: root, body: #"sleep 30 & child=$!; echo $child > "# + descendantPIDFile.path + #"; printf 'descendant failed\n' >&2; printf 'https://auth.openai.com/oauth/authorize?state=partial'; exit 7"#)
         let descendantStarted = Date()
-        let descendantMessage = await failure(for: setup(path: descendant))
+        let descendantSetup = setup(path: descendant)
+        let descendantMessage = await failure(for: descendantSetup)
         let descendantPID = Int32(try String(contentsOf: descendantPIDFile).trimmingCharacters(in: .whitespacesAndNewlines))!
         childPIDs.append(descendantPID)
         _ = kill(descendantPID, SIGTERM)
         childPIDs.removeAll { $0 == descendantPID }
         precondition(descendantMessage.contains("status 7") && Date().timeIntervalSince(descendantStarted) < 3,
                      "inherited pipes should have a bounded EOF wait")
+        precondition(descendantSetup.loginURL == nil, "A drain timeout must not publish a potentially truncated URL")
 
         let fragmented = try script(in: root, body: #"printf 'https://auth.openai.com/oauth/authorize?client_id=abc'; sleep 0.4; printf '&state=fragmented'; sleep 1; exit 7"#)
         let fragmentedSetup = setup(path: fragmented)
@@ -69,6 +71,16 @@ enum AgentSetupChecks {
         childPIDs.removeAll { $0 == pid }
         precondition(stopped, "cancellation should terminate the login process")
         precondition(!done, "cancellation must not call the completion callback")
+
+        let claudePath = try script(in: root, body: #"printf 'https://claude.ai/oauth/authorize?state=fixture\n'; exit 5"#)
+        let claude = AgentSetup(kind: .claude,
+                               installed: InstalledAgent(kind: .claude, path: claudePath, signedIn: false),
+                               envPath: "/usr/bin:/bin:/usr/sbin:/sbin") { _ in }
+        let claudeMessage = await failure(for: claude)
+        precondition(claudeMessage.contains("status 5") && claude.loginURL?.host == "claude.ai")
+        let untrusted = LoginURLScanner(kind: .codex)
+        precondition(untrusted.append(Data("https://auth.openai.com.example.invalid/login\n".utf8)) == nil)
+        precondition(untrusted.finish() == nil, "A lookalike provider host is not a sign-in destination")
 
         print("PASS: agent setup captures login output, redacts diagnostics, and cancels cleanly")
     }

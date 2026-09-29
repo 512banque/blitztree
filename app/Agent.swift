@@ -197,7 +197,7 @@ nonisolated final class AgentPipeReader: @unchecked Sendable {
         onData(chunk)
     }
 
-    private func finish() {
+    private func finish(parseTail: Bool = true) {
         let continuation: CheckedContinuation<Void, Never>?
         lock.lock()
         guard !ended else {
@@ -209,14 +209,16 @@ nonisolated final class AgentPipeReader: @unchecked Sendable {
         waiter = nil
         lock.unlock()
         handle.readabilityHandler = nil
-        onEnd()
+        if parseTail { onEnd() }
         continuation?.resume()
     }
 
     func stop() {
         handle.readabilityHandler = nil
         try? handle.close()
-        finish()
+        // Cancellation or a forced drain timeout is not a real EOF: an
+        // unterminated URL in the remaining tail may still be incomplete.
+        finish(parseTail: false)
     }
 
     func waitForEnd(timeout: TimeInterval = 1) async {
@@ -375,7 +377,7 @@ final class AgentSetup {
 
     func cancel() {
         cancelled = true
-        process?.terminate()
+        if let process, process.isRunning { process.terminate() }
         stopPipes?()
     }
 
@@ -420,14 +422,14 @@ final class AgentSetup {
         let publish: @Sendable (LoginURLScanner?, Data) -> Void = { [weak self] scanner, data in
             guard let scanner, let url = scanner.append(data) else { return }
             Task { @MainActor [weak self] in
-                guard let self, !self.cancelled else { return }
+                guard let self, !self.cancelled, self.loginURL == nil else { return }
                 self.loginURL = url
             }
         }
         let finishURL: @Sendable (LoginURLScanner?) -> Void = { [weak self] scanner in
             guard let scanner, let url = scanner.finish() else { return }
             Task { @MainActor [weak self] in
-                guard let self, !self.cancelled else { return }
+                guard let self, !self.cancelled, self.loginURL == nil else { return }
                 self.loginURL = url
             }
         }
