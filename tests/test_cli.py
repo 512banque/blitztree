@@ -137,6 +137,9 @@ class AgentCLITests(unittest.TestCase):
         self.assertIn("directories=", result.stderr)
         self.assertIn("allocated_bytes=", result.stderr)
         self.assertNotIn("%", result.stderr)
+        final = dict(part.split("=", 1) for part in result.stderr.strip().splitlines()[-1].split()[1:])
+        self.assertEqual(int(final["files"]), report["summary"]["file_count"])
+        self.assertEqual(int(final["directories"]), report["summary"]["directory_count"])
 
     def test_partial_scan_reports_errors(self):
         if os.geteuid() == 0:

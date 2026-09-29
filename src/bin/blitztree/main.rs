@@ -31,15 +31,19 @@ impl ProgressReporter {
         let thread = std::thread::spawn(move || {
             let mut last = None;
             loop {
+                // Read counters after observing completion so the last update
+                // includes every entry. Waking the thread avoids adding 250 ms
+                // to a short scan just to shut down the optional reporter.
+                let finished = thread_stop.load(Ordering::Acquire);
                 let snapshot = progress_snapshot(&progress);
                 if last != Some(snapshot) {
                     write_progress(snapshot);
                     last = Some(snapshot);
                 }
-                if thread_stop.load(Ordering::Relaxed) {
+                if finished {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::park_timeout(Duration::from_millis(250));
             }
         });
         Self {
@@ -51,8 +55,9 @@ impl ProgressReporter {
 
 impl Drop for ProgressReporter {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }
@@ -228,8 +233,8 @@ fn run() -> Result<Value, (i32, String)> {
     let progress_reporter = show_progress.then(|| ProgressReporter::start(Arc::clone(&progress)));
     let started = Instant::now();
     let tree = scan(&root, &progress);
-    drop(progress_reporter);
     let elapsed = started.elapsed().as_secs_f64();
+    drop(progress_reporter);
     let report = if command == "quick-wins" {
         report::quick_wins(&tree, &options)
     } else {
