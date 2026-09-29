@@ -10,6 +10,7 @@ cargo build --locked --release --features cli --bin blitztree
 ./target/release/blitztree quick-wins
 ./target/release/blitztree quick-wins --root "$HOME/projects" --limit 30
 ./target/release/blitztree scan --root "$HOME/Downloads" --min-bytes 104857600
+./target/release/blitztree scan --root "$HOME" --progress > report.json
 ./target/release/blitztree --help
 ```
 
@@ -30,6 +31,9 @@ Stdout contains exactly one JSON object and a newline, including on handled
 errors. Diagnostics go to stderr. Exit codes: `0` report, `1` invalid/unreadable
 root or I/O failure, `2` invalid arguments. A partial scan returns `0` with
 `coverage.complete=false`; inspect coverage before interpreting totals.
+The optional `--progress` flag writes human-readable `files=`, `directories=`
+and `allocated_bytes=` counters to stderr while the scan runs. It does not add
+progress fields to the JSON or claim a percentage.
 
 Common fields: `schema_version`, `tool`, `version`, `command`, `read_only`,
 `root` (absolute resolved path), `generated_at_unix`, `scan_seconds`, `options`,

@@ -107,6 +107,8 @@ or launching an AI agent:
 cargo build --locked --release --features cli --bin blitztree
 ./target/release/blitztree scan --root "$HOME/Downloads"
 ./target/release/blitztree quick-wins --root "$HOME" --limit 20
+# Optional human progress goes to stderr; stdout stays one JSON document.
+./target/release/blitztree scan --root "$HOME" --progress > report.json
 ```
 
 `scan` lists the largest directories and files as JSON. `quick-wins` includes
@@ -114,6 +116,9 @@ that inventory plus the Clean Up panel's existing candidates and labels. The
 panel and CLI share one Rust implementation of the rules, with no new heuristics.
 Both report incomplete scans; allocated bytes are not
 a promise of reclaimable space. Neither command modifies the scanned files.
+Use `--progress` when a human is waiting on a long scan: it reports the
+existing file, directory and allocated-byte counters on stderr without adding
+non-JSON output to stdout or inventing a percentage.
 
 The CLI is built from source separately from the app. Its JSON dependency is
 only compiled with the `cli` feature. See [the CLI contract and tests](docs/AGENT_API.md).

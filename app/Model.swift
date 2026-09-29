@@ -136,6 +136,13 @@ enum FDA {
         return false
     }
 
+    /// Whole-volume roots contain protected app data. A user-selected folder
+    /// can still be scanned without FDA when macOS makes it readable.
+    static func requiresFullDiskAccess(for path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return normalized == "/" || normalized == "/System/Volumes/Data"
+    }
+
     @MainActor
     static func relaunch() {
         let url = Bundle.main.bundleURL
@@ -162,18 +169,21 @@ final class ScanModel {
     var scanning = false
     var elapsed: Double = 0
     var tree: Tree?
-    var scanRoot: String = {
+    /// A valid path passed on the command line is the only launch-time scan.
+    /// Without one the GUI waits for the user to choose a target.
+    private static func commandLineScanPath() -> String? {
         // `BlitzTree /some/path` scans that path on launch (also handy for QA).
-        if CommandLine.arguments.count > 1 {
-            var isDir: ObjCBool = false
-            let p = (CommandLine.arguments[1] as NSString).expandingTildeInPath
-            if FileManager.default.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
-                return p
-            }
+        guard CommandLine.arguments.count > 1 else { return nil }
+        var isDir: ObjCBool = false
+        let p = (CommandLine.arguments[1] as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue else {
+            return nil
         }
-        // Whole disk by default: the user-data volume of the boot volume group.
-        return "/System/Volumes/Data"
-    }()
+        return p
+    }
+
+    let launchScanPath: String? = ScanModel.commandLineScanPath()
+    var scanRoot: String = ScanModel.commandLineScanPath() ?? "/System/Volumes/Data"
     /// Coding agents found on this Mac (Claude Code, Codex) and the user's PATH.
     var agentEnv = AgentEnvironment()
     /// The agent cleanup on screen, if any.

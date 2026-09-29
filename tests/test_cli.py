@@ -116,11 +116,27 @@ class AgentCLITests(unittest.TestCase):
     def test_invalid_root_and_arguments_return_json_errors(self):
         for args in [("destroy",), ("scan", "--limit", "0"), ("scan", "--limit", "1001"),
                      ("scan", "--min-bytes", "-1"), ("scan", "--root"), ("scan", "--include-recent"), ("quick-wins", "--include-recent"),
-                     ("scan", "--limit", "1", "--limit", "2")]:
+                     ("scan", "--limit", "1", "--limit", "2"), ("scan", "--progress", "--progress")]:
             self.assertIn("error", self.run_cli(*args, code=2))
         self.assertIn("error", self.run_cli("scan", "--root", str(self.home / "missing"), code=1))
         file = self.file("a-file")
         self.assertIn("error", self.run_cli("scan", "--root", str(file), code=1))
+
+    def test_progress_is_stderr_only_and_has_no_percentage(self):
+        self.file("progress/file", size=8192)
+        result = subprocess.run(
+            [str(BIN), "scan", "--root", str(self.home), "--min-bytes", "1", "--progress"],
+            env=self.env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(len(result.stdout.strip().splitlines()), 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["schema_version"], 1)
+        self.assertIn("progress:", result.stderr)
+        self.assertIn("files=", result.stderr)
+        self.assertIn("directories=", result.stderr)
+        self.assertIn("allocated_bytes=", result.stderr)
+        self.assertNotIn("%", result.stderr)
 
     def test_partial_scan_reports_errors(self):
         if os.geteuid() == 0:

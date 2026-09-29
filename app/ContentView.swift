@@ -41,7 +41,7 @@ struct ContentView: View {
                     // Hidden by an opaque cover below, not by opacity or hit
                     // testing: SwiftUI re-inserts AppKit views when those change.
                 }
-                if model.tree == nil {
+                if model.tree == nil || needsFDA {
                     Group {
                         if model.scanning {
                             ScanProgress(model: model)
@@ -74,12 +74,10 @@ struct ContentView: View {
         .onChange(of: model.panelRequests) { showCleanup = true }
         .hidingWindowTitle()
         .onAppear {
-            // Never start a whole-disk scan without FDA: every protected
-            // app container would fire a permission prompt.
-            if FDA.isActive() {
-                model.startScan()
-            } else {
-                needsFDA = true
+            // A command-line path is an explicit request (useful for QA and
+            // scripts). Otherwise leave the first scan to the user's choice.
+            if let path = model.launchScanPath {
+                beginScan(path: path)
             }
         }
     }
@@ -102,10 +100,7 @@ struct ContentView: View {
                 Button("I granted it — Relaunch") { FDA.relaunch() }
                     .buttonStyle(.borderedProminent)
             }
-            Button("Scan without it") {
-                needsFDA = false
-                model.startScan()
-            }
+            Button("Scan without it") { startPendingScan() }
             .buttonStyle(.plain)
             .font(.caption)
             .foregroundStyle(.tertiary)
@@ -141,8 +136,8 @@ struct ContentView: View {
 
         ToolbarItemGroup(placement: .automatic) {
             Menu {
-                Button("Macintosh HD") { model.startScan(path: "/System/Volumes/Data") }
-                Button("Home") { model.startScan(path: FileManager.default.homeDirectoryForCurrentUser.path) }
+                Button("Macintosh HD") { beginScan(path: "/System/Volumes/Data") }
+                Button("Home") { beginScan(path: FileManager.default.homeDirectoryForCurrentUser.path) }
                 Divider()
                 Button("Choose Folder…") { chooseFolder() }
             } label: {
@@ -152,7 +147,7 @@ struct ContentView: View {
             .help("Choose what to scan")
 
             Button {
-                model.startScan()
+                beginScan(path: model.scanRoot)
             } label: {
                 Label("Rescan", systemImage: "arrow.clockwise")
             }
@@ -230,8 +225,16 @@ struct ContentView: View {
             Image(systemName: "internaldrive")
                 .font(.system(size: 40))
                 .foregroundStyle(.secondary)
-            Text("Pick a target and scan")
+            Text("Choose what to scan")
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("Home") { beginScan(path: FileManager.default.homeDirectoryForCurrentUser.path) }
+                Button("Macintosh HD") { beginScan(path: "/System/Volumes/Data") }
+                    .buttonStyle(.borderedProminent)
+            }
+            Button("Choose Folder…") { chooseFolder() }
+                .buttonStyle(.link)
         }
     }
 
@@ -241,8 +244,28 @@ struct ContentView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            model.startScan(path: url.path)
+            beginScan(path: url.path)
         }
+    }
+
+    @State private var pendingScanPath: String?
+
+    /// FDA is relevant to a whole-volume scan, but an accessible folder can
+    /// be scanned immediately with the permissions the app already has.
+    private func beginScan(path: String) {
+        pendingScanPath = path
+        if FDA.requiresFullDiskAccess(for: path) && !FDA.isActive() {
+            needsFDA = true
+        } else {
+            startPendingScan()
+        }
+    }
+
+    private func startPendingScan() {
+        guard let path = pendingScanPath ?? model.launchScanPath else { return }
+        pendingScanPath = nil
+        needsFDA = false
+        model.startScan(path: path)
     }
 
     private func openFDASettings() { openFullDiskAccessSettings() }
