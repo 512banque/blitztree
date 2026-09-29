@@ -1,4 +1,4 @@
-# Read-only JSON CLI
+# JSON CLI and saved scans
 
 The `blitztree` executable exposes a versioned JSON interface over the same Rust
 scanner as the GUI. It does not launch the GUI, an AI agent, a shell, a server or

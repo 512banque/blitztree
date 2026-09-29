@@ -111,6 +111,8 @@ cargo build --locked --release --features cli --bin blitztree
 # Optional human progress goes to stderr; stdout stays one JSON document.
 ./target/release/blitztree scan --root "$HOME" --progress > report.json
 ./target/release/blitztree snapshot --root "$HOME" --output "$HOME/blitztree.before.json"
+# Later, after changes to your files:
+./target/release/blitztree snapshot --root "$HOME" --output "$HOME/blitztree.after.json"
 ./target/release/blitztree diff --before "$HOME/blitztree.before.json" --after "$HOME/blitztree.after.json"
 ```
 
@@ -126,6 +128,11 @@ non-JSON output to stdout or inventing a percentage.
 The CLI is built from source separately from the app; the `cli` feature only
 enables its executable. Snapshot files are created exclusively with owner-only
 permissions and the comparison is read-only. See [the CLI contract and tests](docs/AGENT_API.md).
+
+In the app, scan a folder and click **What grew?** in the toolbar. **Save
+Snapshot…** records the current scan; after a later rescan, **Compare
+Snapshot…** compares that scan with the saved file. The table shows the largest
+increases first and marks uncertain changes when a scan could not see everything.
 
 ## License
 
