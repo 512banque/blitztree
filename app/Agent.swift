@@ -371,7 +371,9 @@ final class AgentSetup {
                     return
                 }
             }
-            done(await AgentLocator.find())
+            let environment = await AgentLocator.find()
+            guard !cancelled else { return }
+            done(environment)
         }
     }
 
