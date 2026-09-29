@@ -6,7 +6,7 @@ AGENT_BENCH_TMP=$(mktemp -d /tmp/blitztree-agent-bench.XXXXXX)
 trap 'rm -rf "$AGENT_BENCH_TMP"' EXIT
 mkdir "$AGENT_BENCH_TMP/app"
 cp app/*.swift "$AGENT_BENCH_TMP/app/"
-shasum -a 256 "$AGENT_BENCH_TMP/app/Agent.swift" "$AGENT_BENCH_TMP/app/Cleanup.swift" "$AGENT_BENCH_TMP/app/CleanupCommand.swift" "$AGENT_BENCH_TMP/app/CleanupSafety.swift" "$AGENT_BENCH_TMP/app/CleanupOperations.swift" "$AGENT_BENCH_TMP/app/Model.swift"
+shasum -a 256 "$AGENT_BENCH_TMP/app/Agent.swift" "$AGENT_BENCH_TMP/app/Cleanup.swift" "$AGENT_BENCH_TMP/app/CleanupCommand.swift" "$AGENT_BENCH_TMP/app/CleanupSafety.swift" "$AGENT_BENCH_TMP/app/CleanupOperations.swift" "$AGENT_BENCH_TMP/app/Model.swift" "$AGENT_BENCH_TMP/app/ScanComparison.swift"
 python3 - "$AGENT_BENCH_TMP/app/Agent.swift" "$AGENT_BENCH_TMP/app/Cleanup.swift" "$AGENT_BENCH_TMP/app/Model.swift" <<'PY'
 from pathlib import Path
 import sys
@@ -42,6 +42,7 @@ swiftc "$AGENT_BENCH_TMP"/app/Agent.swift "$AGENT_BENCH_TMP"/app/Cleanup.swift \
   "$AGENT_BENCH_TMP"/app/CleanupCommand.swift "$AGENT_BENCH_TMP"/app/CleanupSafety.swift \
   "$AGENT_BENCH_TMP"/app/CleanupOperations.swift \
   "$AGENT_BENCH_TMP"/app/ContentView.swift "$AGENT_BENCH_TMP"/app/Model.swift \
+  "$AGENT_BENCH_TMP"/app/ScanComparison.swift \
   "$AGENT_BENCH_TMP"/app/Treemap.swift "$AGENT_BENCH_TMP"/app/TreemapView.swift "$AGENT_BENCH_TMP"/app/SunburstView.swift \
   benchmarks/AgentReference.swift benchmarks/AgentPerformance.swift "$AGENT_BENCH_TMP/fixture.o" \
   -import-objc-header benchmarks/ui_fixture.h \
