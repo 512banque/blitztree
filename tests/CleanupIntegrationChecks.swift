@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @main
 struct CleanupIntegrationChecks {
@@ -35,6 +36,42 @@ struct CleanupIntegrationChecks {
                          paths: paths, action: action, command: command)
         }
         func plan(_ value: PlanItemSpec) -> PlanItem { PlanItem(spec: value, tree: tree, home: home) }
+        // Menus capture the clicked item, not a later selection, and refuse
+        // stale scans or concurrent work. No menu action invokes the real Trash.
+        let model = ScanModel()
+        model.tree = tree
+        let menu = NodeMenu.menu(node: tree.node(at: cache)!, model: model)!
+        precondition(menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+                     == ["Reveal in Finder", "Copy Path", "Move to Trash"])
+        let menuTarget = menu.items.last!.representedObject as! NodeMenu.Target
+        precondition(menuTarget.item.path == cache && menuTarget.blocked == nil)
+        model.selection = tree.node(at: other)
+        precondition(menuTarget.item.path == cache, "menu must retain the clicked path")
+        model.scanning = true
+        precondition(menuTarget.blocked != nil)
+        model.scanning = false
+        model.tree = nil
+        precondition(menuTarget.blocked != nil, "a stale menu must not act on a newer scan")
+        model.tree = tree
+        let rootMenu = NodeMenu.menu(node: 0, model: model)!
+        precondition(rootMenu.items[0].isEnabled && rootMenu.items[1].isEnabled)
+        precondition(!rootMenu.items.last!.isEnabled && rootMenu.items.last!.toolTip != nil)
+        let outline = NodeOutlineView()
+        let coordinator = OutlinePanel.Coordinator()
+        coordinator.model = model
+        coordinator.outline = outline
+        outline.dataSource = coordinator
+        outline.delegate = coordinator
+        coordinator.rebuildIfNeeded()
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let clickedRow = outline.numberOfRows - 1
+        let rowMenu = coordinator.menu(for: clickedRow)!
+        let clicked = outline.item(atRow: clickedRow) as! OutlinePanel.Item
+        precondition((rowMenu.items[0].representedObject as! NodeMenu.Target).item.path == tree.path(clicked.id))
+        precondition(coordinator.menu(for: -1) == nil)
+        model.tree = nil
+        precondition(coordinator.menu(for: clickedRow) == nil)
+
         let valid = plan(spec([cache], action: "command", command: "uv cache clean"))
         precondition(valid.blocked == nil && valid.viaTrash && valid.paths == [cache])
         precondition(valid.bytes == tree.alloc[tree.node(at: cache)!], "use scanned bytes")

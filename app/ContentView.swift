@@ -72,6 +72,11 @@ struct ContentView: View {
         // An agent run or the setup offer always shows in the panel.
         .onChange(of: model.agentRun == nil) { if model.agentRun != nil { showCleanup = true } }
         .onChange(of: model.panelRequests) { showCleanup = true }
+        .alert("Some items couldn't be moved", isPresented: .constant(!model.cleanupTrash.failures.isEmpty)) {
+            Button("OK") { model.cleanupTrash.clearFailures() }
+        } message: {
+            Text(model.cleanupTrash.failures.joined(separator: "\n"))
+        }
         .hidingWindowTitle()
         .onAppear {
             // Never start a whole-disk scan without FDA: every protected
@@ -278,6 +283,7 @@ private struct ScanStatusBar: View {
             if let tree = model.tree {
                 if let sel = model.hovered ?? model.selection {
                     Text(tree.displayPath(sel))
+                        .textSelection(.enabled)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
@@ -410,6 +416,17 @@ final class ValueCell: NSTableCellView {
         super.layout()
         textField?.frame = NSRect(x: 0, y: ((bounds.height - Self.lineHeight) / 2).rounded(),
                                   width: max(0, bounds.width - 2), height: Self.lineHeight)
+    }
+}
+
+final class NodeOutlineView: NSOutlineView {
+    var nodeMenu: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let clicked = row(at: convert(event.locationInWindow, from: nil))
+        guard clicked >= 0 else { return nil }
+        selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+        return nodeMenu?(clicked)
     }
 }
 
@@ -633,6 +650,13 @@ struct OutlinePanel: NSViewRepresentable {
             }
         }
 
+        func menu(for row: Int) -> NSMenu? {
+            guard let outline, row >= 0, row < outline.numberOfRows,
+                  let model, let item = outline.item(atRow: row) as? Item,
+                  model.tree === item.tree else { return nil }
+            return NodeMenu.menu(node: item.id, model: model)
+        }
+
         @objc func doubleClicked(_ sender: NSOutlineView) {
             guard let it = sender.item(atRow: sender.clickedRow) as? Item else { return }
             if it.tree.isDir(it.id) {
@@ -647,7 +671,7 @@ struct OutlinePanel: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let outline = NSOutlineView()
+        let outline = NodeOutlineView()
         outline.style = .plain
         outline.rowSizeStyle = .default
         outline.usesAlternatingRowBackgroundColors = true
@@ -678,6 +702,7 @@ struct OutlinePanel: NSViewRepresentable {
         outline.delegate = coord
         outline.target = coord
         outline.doubleAction = #selector(Coordinator.doubleClicked(_:))
+        outline.nodeMenu = { [weak coord] row in coord?.menu(for: row) }
 
         let scroll = NSScrollView()
         scroll.documentView = outline
