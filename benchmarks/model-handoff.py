@@ -56,6 +56,9 @@ try:
         work / "Model.swift",
         ROOT / "app/Agent.swift",
         ROOT / "app/Cleanup.swift",
+        ROOT / "app/CleanupCommand.swift",
+        ROOT / "app/CleanupSafety.swift",
+        ROOT / "app/CleanupOperations.swift",
         ROOT / "benchmarks/ModelHandoff.swift",
     ]
     fixture_object = work / "model_fixture.o"

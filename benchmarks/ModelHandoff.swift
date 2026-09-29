@@ -33,7 +33,7 @@ struct ModelHandoff {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let model = ScanModel()
-        // Keep the test headless: autoStartIfReady is a no-op while discovery
+        // Keep the test headless: openPanelAfterLaunchScan is a no-op while discovery
         // is not loaded, and this harness never calls AgentLocator.
         model.agentEnv = AgentEnvironment(loaded: false)
 

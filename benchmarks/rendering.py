@@ -76,6 +76,15 @@ for legacy in (True, False):
         files.append(str(path))
 binary = args.output.resolve() if args.output else work / "rendering"
 runner = (ROOT / "benchmarks" / ("rendering_real.swift" if args.real else "rendering.swift")).read_text()
+if not args.real:
+    # Compile the production selection mapping into the fixture adapter too.
+    # Keep the algorithm in Model.swift instead of maintaining a test copy.
+    model = (ROOT / "app/Model.swift").read_text()
+    drawn = re.search(r"    func drawn\(.*?\n    \}", model, flags=re.S)
+    if drawn is None:
+        raise SystemExit("Tree.drawn shape changed; update the fixture adapter")
+    method = drawn.group().replace("func drawn(", "nonisolated func drawn(", 1)
+    runner += "\nextension Tree {\n" + method + "\n}\n"
 # Adapt the runner to the baseline's renderer API.
 if baseline_has_layout:  # squarify returns a Layout with coverage (0648293)
     runner = runner.replace("let legacy = LegacySquarify.layoutItems(items, rect: rect)",

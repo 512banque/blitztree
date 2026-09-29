@@ -26,10 +26,10 @@ Capacity is a value input to both SwiftUI representables so its arrival also
 schedules an update of the native views.
 
 ```sh
-python3 benchmarks/rendering.py --baseline bf3b1fc --check-only
+python3 benchmarks/rendering.py --baseline d5a0fc8 --check-only
 ```
 
-This also checks unchanged pixels, geometry and hit testing against v0.5.2;
+This also checks unchanged pixels, geometry and hit testing against v0.5.6;
 the existing layouts and visual styles are preserved.
 
 `--measure` injects a 1.5-second volume delay and prints tree, scan-complete,
