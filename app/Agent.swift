@@ -144,6 +144,184 @@ nonisolated final class OutputText: @unchecked Sendable {
     var value: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
 }
 
+/// The result of a short-lived agent setup command. Both output streams are
+/// drained while the process runs so a verbose installer cannot block on a
+/// full pipe, and the login URL can be shown before the command exits.
+nonisolated struct AgentProcessResult: Sendable {
+    let status: Int32?
+    let stdout: String
+    let stderr: String
+    let launchError: String?
+}
+
+/// Reads one subprocess pipe without leaving a readability handler behind.
+nonisolated final class AgentPipeReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private let onData: @Sendable (Data) -> Void
+    private let onEnd: @Sendable () -> Void
+    private let lock = NSLock()
+    private var data = Data()
+    private var ended = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    init(_ handle: FileHandle, onData: @escaping @Sendable (Data) -> Void,
+         onEnd: @escaping @Sendable () -> Void = {}) {
+        self.handle = handle
+        self.onData = onData
+        self.onEnd = onEnd
+    }
+
+    func start() {
+        handle.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                finish()
+            } else {
+                append(chunk)
+            }
+        }
+    }
+
+    private func append(_ chunk: Data) {
+        lock.lock()
+        guard !ended else {
+            lock.unlock()
+            return
+        }
+        data.append(chunk)
+        // Setup output is diagnostic only. Keep enough for an error message
+        // and URL extraction without allowing a chatty command to grow memory.
+        if data.count > 64 * 1024 { data.removeFirst(data.count - 64 * 1024) }
+        lock.unlock()
+        onData(chunk)
+    }
+
+    private func finish(parseTail: Bool = true) {
+        let continuation: CheckedContinuation<Void, Never>?
+        lock.lock()
+        guard !ended else {
+            lock.unlock()
+            return
+        }
+        ended = true
+        continuation = waiter
+        waiter = nil
+        lock.unlock()
+        handle.readabilityHandler = nil
+        if parseTail { onEnd() }
+        continuation?.resume()
+    }
+
+    func stop() {
+        handle.readabilityHandler = nil
+        try? handle.close()
+        // Cancellation or a forced drain timeout is not a real EOF: an
+        // unterminated URL in the remaining tail may still be incomplete.
+        finish(parseTail: false)
+    }
+
+    func waitForEnd(timeout: TimeInterval = 1) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if ended {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                lock.unlock()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak self] in
+                    self?.stop()
+                }
+            }
+        }
+    }
+
+    var text: String {
+        lock.lock(); defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// Finds only provider login URLs. Arbitrary output is never opened or
+/// copied, which prevents a command's text from becoming a navigation target.
+nonisolated final class LoginURLScanner: @unchecked Sendable {
+    private let kind: AgentKind
+    private let lock = NSLock()
+    private var text = ""
+    private var reported = false
+
+    init(kind: AgentKind) { self.kind = kind }
+
+    func append(_ data: Data) -> URL? {
+        lock.lock()
+        text += String(decoding: data, as: UTF8.self)
+        if text.count > 16 * 1024 { text = String(text.suffix(16 * 1024)) }
+        guard !reported, let url = Self.find(in: text, kind: kind, allowEnd: false) else {
+            lock.unlock()
+            return nil
+        }
+        reported = true
+        lock.unlock()
+        return url
+    }
+
+    func finish() -> URL? {
+        lock.lock()
+        guard !reported, let url = Self.find(in: text, kind: kind, allowEnd: true) else {
+            lock.unlock()
+            return nil
+        }
+        reported = true
+        lock.unlock()
+        return url
+    }
+
+    private static func find(in text: String, kind: AgentKind, allowEnd: Bool) -> URL? {
+        var search = text.startIndex
+        while let start = text.range(of: "https://", range: search..<text.endIndex)?.lowerBound {
+            let rest = text[start...]
+            let delimiter = rest.firstIndex { $0.isWhitespace || "\"'<>[]()".contains($0) }
+            guard allowEnd || delimiter != nil else { return nil }
+            let end = delimiter ?? text.endIndex
+            var raw = String(text[start..<end])
+            while raw.last.map({ ".,;:".contains($0) }) == true { raw.removeLast() }
+            if let components = URLComponents(string: raw),
+               components.scheme?.lowercased() == "https",
+               let host = components.host?.lowercased(),
+               allowedHosts(for: kind).contains(where: { host == $0 || host.hasSuffix("." + $0) }),
+               let url = URL(string: raw) {
+                return url
+            }
+            search = end == text.endIndex ? text.endIndex : text.index(after: end)
+            if search == text.endIndex { break }
+        }
+        return nil
+    }
+
+    static func redactURLs(in text: String) -> String {
+        var result = ""
+        var search = text.startIndex
+        while let start = text.range(of: "https://", range: search..<text.endIndex)?.lowerBound {
+            result += text[search..<start]
+            let rest = text[start...]
+            let end = rest.firstIndex { $0.isWhitespace || "\"'<>[]()".contains($0) } ?? text.endIndex
+            result += "[redacted URL]"
+            search = end
+            if search == text.endIndex { break }
+        }
+        result += text[search...]
+        return result
+    }
+
+    private static func allowedHosts(for kind: AgentKind) -> [String] {
+        switch kind {
+        case .claude: return ["claude.ai", "console.anthropic.com"]
+        case .codex: return ["auth.openai.com", "chatgpt.com", "openai.com"]
+        }
+    }
+}
+
 // MARK: - One-click setup
 
 /// Installs an agent into ~/.local/bin and signs it in through the browser,
@@ -155,13 +333,17 @@ final class AgentSetup {
 
     let kind: AgentKind
     private(set) var step: Step
+    /// A provider URL printed by the login command, safe to open or copy.
+    private(set) var loginURL: URL?
     private var process: Process?
+    private var stopPipes: (() -> Void)?
     private var cancelled = false
 
     init(kind: AgentKind, installed: InstalledAgent?, envPath: String,
          done: @escaping (AgentEnvironment) -> Void) {
         self.kind = kind
         step = installed == nil ? .installing : .signingIn
+        loginURL = nil
         Task {
             var path = installed?.path
             if path == nil {
@@ -175,21 +357,30 @@ final class AgentSetup {
             guard let path, !cancelled else { return }
             if !AgentLocator.isSignedIn(kind, path: path, envPath: envPath) {
                 step = .signingIn
+                loginURL = nil
                 // Opens the browser; the CLI finishes once the sign-in comes back.
-                _ = await exec(path, kind == .claude ? ["auth", "login"] : ["login"], envPath: envPath)
+                let result = await exec(path, kind == .claude ? ["auth", "login"] : ["login"],
+                                        envPath: envPath, loginKind: kind)
                 guard !cancelled else { return }
+                if result.status != 0 || result.launchError != nil {
+                    step = .failed(Self.loginError(kind: kind, result: result))
+                    return
+                }
                 if !AgentLocator.isSignedIn(kind, path: path, envPath: envPath) {
-                    step = .failed("Sign-in didn't finish. Try again.")
+                    step = .failed(Self.loginError(kind: kind, result: result))
                     return
                 }
             }
-            done(await AgentLocator.find())
+            let environment = await AgentLocator.find()
+            guard !cancelled else { return }
+            done(environment)
         }
     }
 
     func cancel() {
         cancelled = true
-        process?.terminate()
+        if let process, process.isRunning { process.terminate() }
+        stopPipes?()
     }
 
     private static func installScript(_ kind: AgentKind) -> String {
@@ -209,10 +400,15 @@ final class AgentSetup {
 
     /// Runs a script; returns the last error line on failure.
     private func shell(_ script: String) async -> String? {
-        await exec("/bin/bash", ["-c", script], envPath: "/usr/bin:/bin:/usr/sbin:/sbin")
+        let result = await exec("/bin/bash", ["-c", script], envPath: "/usr/bin:/bin:/usr/sbin:/sbin")
+        guard result.status == 0, result.launchError == nil else {
+            return result.launchError ?? Self.errorText(result)
+        }
+        return nil
     }
 
-    private func exec(_ exe: String, _ args: [String], envPath: String) async -> String? {
+    private func exec(_ exe: String, _ args: [String], envPath: String,
+                      loginKind: AgentKind? = nil) async -> AgentProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exe)
         process.arguments = args
@@ -221,21 +417,75 @@ final class AgentSetup {
         process.environment = environment
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        let out = Pipe()
         let err = Pipe()
-        process.standardError = err
-        let tail = ErrTail()
-        err.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty { handle.readabilityHandler = nil } else { tail.feed(data) }
+        let stdoutScanner = loginKind.map(LoginURLScanner.init)
+        let stderrScanner = loginKind.map(LoginURLScanner.init)
+        let publish: @Sendable (LoginURLScanner?, Data) -> Void = { [weak self] scanner, data in
+            guard let scanner, let url = scanner.append(data) else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !self.cancelled, self.loginURL == nil else { return }
+                self.loginURL = url
+            }
         }
-        do { try process.run() } catch { return error.localizedDescription }
+        let finishURL: @Sendable (LoginURLScanner?) -> Void = { [weak self] scanner in
+            guard let scanner, let url = scanner.finish() else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !self.cancelled, self.loginURL == nil else { return }
+                self.loginURL = url
+            }
+        }
+        let outReader = AgentPipeReader(out.fileHandleForReading,
+                                        onData: { data in publish(stdoutScanner, data) },
+                                        onEnd: { finishURL(stdoutScanner) })
+        let errReader = AgentPipeReader(err.fileHandleForReading,
+                                        onData: { data in publish(stderrScanner, data) },
+                                        onEnd: { finishURL(stderrScanner) })
+        process.standardOutput = out
+        process.standardError = err
+        do {
+            try process.run()
+        } catch {
+            outReader.stop(); errReader.stop()
+            return AgentProcessResult(status: nil, stdout: "", stderr: "", launchError: error.localizedDescription)
+        }
         self.process = process
+        self.stopPipes = { outReader.stop(); errReader.stop() }
+        outReader.start()
+        errReader.start()
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async { process.waitUntilExit(); c.resume() }
         }
+        await outReader.waitForEnd()
+        await errReader.waitForEnd()
         self.process = nil
-        return process.terminationStatus == 0 ? nil : (tail.last.isEmpty ? "exit \(process.terminationStatus)" : tail.last)
+        self.stopPipes = nil
+        return AgentProcessResult(status: process.terminationStatus,
+                                  stdout: outReader.text, stderr: errReader.text, launchError: nil)
+    }
+
+    private static func loginError(kind: AgentKind, result: AgentProcessResult) -> String {
+        if let launchError = result.launchError {
+            return "Couldn't start \(kind.name) login: \(launchError)"
+        }
+        if result.status == 0 {
+            return "\(kind.name) login finished, but it still reports no signed-in account. Try again."
+        }
+        let status = result.status.map(String.init) ?? "unknown"
+        let detail = errorText(result)
+        return detail.isEmpty
+            ? "\(kind.name) login exited with status \(status). Try again."
+            : "\(kind.name) login exited with status \(status): \(detail)"
+    }
+
+    private static func errorText(_ result: AgentProcessResult) -> String {
+        let lines = [result.stderr, result.stdout].flatMap { text in
+            text.split(whereSeparator: \.isNewline).map(String.init)
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        }
+        return lines.suffix(2).map { LoginURLScanner.redactURLs(in: $0) }
+            .joined(separator: "; ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

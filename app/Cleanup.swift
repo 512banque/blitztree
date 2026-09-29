@@ -710,31 +710,60 @@ private struct SetupProgress: View {
     let cancel: () -> Void
     let retry: () -> Void
 
+    private var isInstalling: Bool {
+        if case .installing = setup.step { return true }
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             switch setup.step {
             case .installing, .signingIn:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(setup.step == .installing ? "Installing \(setup.kind.name)" : "Sign in to \(setup.kind.name)")
-                            .font(.headline)
-                            .modifier(Shimmer(active: true))
-                        Text(setup.step == .installing ? "About 15 seconds, no password needed"
-                             : "Finish in the browser window that just opened")
-                            .font(.callout)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(isInstalling ? "Installing \(setup.kind.name)" : "Sign in to \(setup.kind.name)")
+                                .font(.headline)
+                                .modifier(Shimmer(active: true))
+                            Text(isInstalling ? "About 15 seconds, no password needed"
+                                 : "Finish in the browser window that just opened")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Button("Cancel", action: cancel)
+                            .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 4)
-                    Button("Cancel", action: cancel)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                    if case .signingIn = setup.step, let url = setup.loginURL {
+                        HStack(spacing: 10) {
+                            Button("Open sign-in page") { NSWorkspace.shared.open(url) }
+                            Button("Copy link") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             case .failed(let message):
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
+                if let url = setup.loginURL {
+                    HStack(spacing: 10) {
+                        Button("Open sign-in page") { NSWorkspace.shared.open(url) }
+                        Button("Copy link") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button("Cancel", action: cancel)
                     Spacer()

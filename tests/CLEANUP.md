@@ -32,3 +32,14 @@ benchmarks/run-ui.sh --check-only
 The guards revalidate metadata immediately before filesystem operations. They do
 not provide an atomic filesystem sandbox against concurrent hostile changes.
 Agent startup, provider access and installation behavior are outside these checks.
+
+The focused setup harness is separate:
+
+```sh
+tests/run-agent-setup.sh
+```
+
+It uses temporary executable scripts to cover launch errors, non-zero exits,
+stdout/stderr capture, split provider URLs, EOF, cancellation and a successful
+login command whose follow-up status still reports no account. It never starts
+a real agent, opens a browser, reads credentials or installs anything.
