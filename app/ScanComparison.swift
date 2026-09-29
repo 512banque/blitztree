@@ -127,7 +127,8 @@ struct ScanComparisonView: View {
     private func save() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "BlitzTree-\(Date().formatted(.iso8601.year().month().day())).json"
+        let stamp = Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-")
+        panel.nameFieldStringValue = "BlitzTree-\(stamp).json"
         panel.message = "Choose a new file. Snapshots stay on your Mac and include folder paths."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         busy = true; message = nil; failed = false
@@ -187,7 +188,7 @@ struct ScanDifferenceResults: View {
                 TableColumn("Change") { Text($0.delta).monospacedDigit() }.width(100)
                 TableColumn("Status") { Text($0.status.capitalized).foregroundStyle(.secondary) }.width(80)
             }
-            if diff.total_changes == 0 { Text("No folder-size changes found.").foregroundStyle(.secondary) }
+            if diff.total_changes == 0 { Text("No subfolder-size changes found.").foregroundStyle(.secondary) }
             Text("Showing \(diff.changes.count) of \(diff.total_changes) changes. Folder sizes include their children; do not add these rows together.")
                 .font(.caption).foregroundStyle(.secondary)
         }
