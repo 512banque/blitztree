@@ -100,8 +100,9 @@ Future upstream changes can be merged into this fork while retaining the patches
 
 ## JSON CLI for agents and scripts
 
-An optional, read-only CLI uses the same scan engine without opening the GUI
-or launching an AI agent:
+An optional local CLI uses the same scan engine without opening the GUI or
+launching an AI agent. Scans do not modify the scanned tree; `snapshot` writes
+only the explicit output file:
 
 ```sh
 cargo build --locked --release --features cli --bin blitztree
@@ -109,6 +110,8 @@ cargo build --locked --release --features cli --bin blitztree
 ./target/release/blitztree quick-wins --root "$HOME" --limit 20
 # Optional human progress goes to stderr; stdout stays one JSON document.
 ./target/release/blitztree scan --root "$HOME" --progress > report.json
+./target/release/blitztree snapshot --root "$HOME" --output "$HOME/blitztree.before.json"
+./target/release/blitztree diff --before "$HOME/blitztree.before.json" --after "$HOME/blitztree.after.json"
 ```
 
 `scan` lists the largest directories and files as JSON. `quick-wins` includes
@@ -120,8 +123,9 @@ Use `--progress` when a human is waiting on a long scan: it reports the
 existing file, directory and allocated-byte counters on stderr without adding
 non-JSON output to stdout or inventing a percentage.
 
-The CLI is built from source separately from the app. Its JSON dependency is
-only compiled with the `cli` feature. See [the CLI contract and tests](docs/AGENT_API.md).
+The CLI is built from source separately from the app; the `cli` feature only
+enables its executable. Snapshot files are created exclusively with owner-only
+permissions and the comparison is read-only. See [the CLI contract and tests](docs/AGENT_API.md).
 
 ## License
 
