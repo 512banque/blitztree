@@ -293,7 +293,7 @@ private struct ScanProgress: View {
     let model: ScanModel
     var body: some View {
         VStack(spacing: 14) {
-            Text(Fmt.size(model.bytes))
+            Text(Fmt.fixedSize(model.bytes))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.white)
@@ -328,6 +328,7 @@ private struct ScanStatusBar: View {
                         .monospacedDigit()
                 } else {
                     Text("\(Fmt.num(UInt64(tree.nFiles[model.viewRoot]))) files · \(Fmt.size(tree.alloc[model.viewRoot]))")
+                        .monospacedDigit()
                     Spacer()
                     if tree.errors > 0 {
                         if FDA.isActive() {
